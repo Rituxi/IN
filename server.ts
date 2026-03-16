@@ -1,12 +1,9 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { apiRouter } from './server/api.js';
 import 'dotenv/config';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+declare const __dirname: string;
 
 async function startServer() {
   const app = express();
@@ -22,13 +19,15 @@ async function startServer() {
   app.use('/api', apiRouter);
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(__dirname, 'dist');
+    const distPath = __dirname;
+    console.log('Serving static files from:', distPath);
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

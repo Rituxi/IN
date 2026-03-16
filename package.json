@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && tsc server.ts --outDir dist --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck --declaration false",
-    "build:server": "esbuild server.ts --bundle --platform=node --target=node18 --outfile=dist/server.cjs --format=cjs --external:@upstash/redis --external:@google/genai --external:express --external:dotenv --external:ioredis",
+    "build": "vite build && npm run build:server",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node18 --outfile=dist/server.cjs --format=cjs --external:@upstash/redis --external:@google/genai --external:express --external:dotenv --external:ioredis --external:uuid --external:vite --external:lightningcss --external:esbuild",
     "build:all": "vite build && npm run build:server",
     "preview": "vite preview",
     "start": "node dist/server.cjs",
@@ -14,9 +14,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
-    "@tailwindcss/vite": "^4.1.14",
     "@upstash/redis": "^1.37.0",
-    "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
@@ -30,13 +28,14 @@
     "react-router-dom": "^7.13.1",
     "tailwind-merge": "^3.5.0",
     "uuid": "^13.0.0",
-    "vite": "^6.2.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.24.0",
     "tailwindcss": "^4.1.14",
