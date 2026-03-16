@@ -1,0 +1,16 @@
+services:
+  - name: medical-report-ai
+    env: node
+    buildCommand: npm ci && npm run build:all
+    startCommand: node dist/server.cjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: ADMIN_PASSWORD
+        generateValue: true

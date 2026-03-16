@@ -1,16 +1,147 @@
 import { Router } from 'express';
-import { Redis } from '@upstash/redis';
+import { Redis as UpstashRedis } from '@upstash/redis';
+import Redis from 'ioredis';
 import { GoogleGenAI, Type } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 export const apiRouter = Router();
 
-// Initialize Upstash Redis
-// The user needs to provide UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || '',
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || '',
-});
+interface RedisClient {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  del(key: string): Promise<void>;
+  incr(key: string): Promise<number>;
+  lpush(key: string, value: string): Promise<number>;
+  lrange(key: string, start: number, stop: number): Promise<string[]>;
+  ltrim(key: string, start: number, stop: number): Promise<void>;
+  mget(...keys: string[]): Promise<(string | null)[]>;
+  scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]>;
+}
+
+class IORedisAdapter implements RedisClient {
+  private client: Redis;
+
+  constructor(url: string) {
+    this.client = new Redis(url, {
+      tls: url.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
+    });
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.client.get(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    await this.client.set(key, value);
+  }
+
+  async del(key: string): Promise<void> {
+    await this.client.del(key);
+  }
+
+  async incr(key: string): Promise<number> {
+    const result = await this.client.incr(key);
+    return result;
+  }
+
+  async lpush(key: string, value: string): Promise<number> {
+    return this.client.lpush(key, value);
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    return this.client.lrange(key, start, stop);
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<void> {
+    await this.client.ltrim(key, start, stop);
+  }
+
+  async mget(...keys: string[]): Promise<(string | null)[]> {
+    return this.client.mget(...keys);
+  }
+
+  async scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]> {
+    const result = await this.client.scan(parseInt(cursor), 'MATCH', options?.match || '*', 'COUNT', options?.count || 100);
+    return result;
+  }
+}
+
+class UpstashRedisAdapter implements RedisClient {
+  private client: UpstashRedis;
+
+  constructor(url: string, token: string) {
+    this.client = new UpstashRedis({ url, token });
+  }
+
+  async get(key: string): Promise<string | null> {
+    const result = await this.client.get(key);
+    if (result === null) return null;
+    return typeof result === 'string' ? result : JSON.stringify(result);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    await this.client.set(key, value);
+  }
+
+  async del(key: string): Promise<void> {
+    await this.client.del(key);
+  }
+
+  async incr(key: string): Promise<number> {
+    const result = await this.client.incr(key);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
+  async lpush(key: string, value: string): Promise<number> {
+    const result = await this.client.lpush(key, value);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const result = await this.client.lrange(key, start, stop);
+    return result.map(r => typeof r === 'string' ? r : JSON.stringify(r));
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<void> {
+    await this.client.ltrim(key, start, stop);
+  }
+
+  async mget(...keys: string[]): Promise<(string | null)[]> {
+    const result = await this.client.mget(...keys);
+    return result.map(r => {
+      if (r === null) return null;
+      return typeof r === 'string' ? r : JSON.stringify(r);
+    });
+  }
+
+  async scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]> {
+    const result = await this.client.scan(cursor, options);
+    return [result[0], result[1]];
+  }
+}
+
+function createRedisClient(): RedisClient {
+  const redisUrl = process.env.REDIS_URL;
+  const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (redisUrl) {
+    console.log('Using Redis TCP connection (REDIS_URL)');
+    return new IORedisAdapter(redisUrl);
+  }
+
+  if (upstashUrl && upstashToken) {
+    console.log('Using Upstash Redis REST API (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
+    return new UpstashRedisAdapter(upstashUrl, upstashToken);
+  }
+
+  throw new Error('Redis configuration missing. Please set either REDIS_URL or (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
+}
+
+const redis = createRedisClient();
 
 // Initialize Gemini API
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });

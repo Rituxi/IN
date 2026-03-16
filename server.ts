@@ -3,26 +3,24 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './server/api.js';
+import 'dotenv/config';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
-  // Middleware to parse JSON bodies
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // API Routes
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
   app.use('/api', apiRouter);
 
-  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -30,9 +28,9 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
