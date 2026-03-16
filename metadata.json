@@ -1,0 +1,5 @@
+{
+  "name": "智能报告单识别系统",
+  "description": "基于 Gemini 和 Redis 的医疗报告单识别与智能小结系统，支持小程序接入与后台管理。",
+  "requestFramePermissions": []
+}
