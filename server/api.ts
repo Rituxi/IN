@@ -460,16 +460,70 @@ async function logUsage(userId: string, ip: string, feature: string, monthlyUsed
 
 // --- API Routes ---
 
+// 0. WeChat OpenID API
+apiRouter.post('/wx/openid', async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ error: 'CODE_REQUIRED', message: '缺少微信登录code' });
+    }
+
+    const appid = process.env.WX_APPID;
+    const secret = process.env.WX_APPSECRET;
+
+    if (!appid || !secret) {
+      console.error('WX_APPID or WX_APPSECRET not configured');
+      return res.status(500).json({ error: 'WX_CONFIG_MISSING', message: '服务器微信配置缺失' });
+    }
+
+    const url = `https://api.weixin.qq.com/sns/jscode2session?appid=${appid}&secret=${secret}&js_code=${code}&grant_type=authorization_code`;
+    const response = await fetch(url);
+    const data = await response.json() as any;
+
+    if (data.errcode) {
+      console.error('WeChat API error:', data);
+      return res.status(400).json({ error: 'WECHAT_API_ERROR', detail: data });
+    }
+
+    if (!data.openid) {
+      return res.status(400).json({ error: 'OPENID_FETCH_FAILED', detail: data });
+    }
+
+    return res.json({ openid: data.openid, session_key: data.session_key });
+  } catch (e: any) {
+    console.error('OpenID fetch error:', e);
+    return res.status(500).json({ error: 'SERVER_ERROR', message: e.message });
+  }
+});
+
+// Helper: Validate openid and get user
+async function validateAndGetUser(openid: string | undefined, userId: string | undefined) {
+  if (!openid) {
+    return { valid: false, error: { status: 401, response: { error: 'OPENID_REQUIRED', message: '缺少openid，请先登录' } } };
+  }
+  
+  const effectiveUserId = openid;
+  const user = await getUser(effectiveUserId);
+  
+  return { valid: true, user, effectiveUserId };
+}
+
 // 1. OCR API
 apiRouter.post('/analyze/image-base64', async (req, res) => {
   try {
-    const { base64, mimeType, userId, nickname } = req.body;
+    const { base64, mimeType, userId, nickname, openid } = req.body;
     
-    if (!base64 || !userId) {
-      return res.status(400).json({ error: 'INVALID_REQUEST', message: 'Missing base64 or userId' });
+    if (!base64) {
+      return res.status(400).json({ error: 'INVALID_REQUEST', message: 'Missing base64' });
     }
 
-    const user = await getUser(userId);
+    const validation = await validateAndGetUser(openid, userId);
+    if (!validation.valid) {
+      return res.status(validation.error!.status).json(validation.error!.response);
+    }
+    
+    const user = validation.user!;
+    const effectiveUserId = validation.effectiveUserId!;
     const totalOcrLimit = user.ocrLimit + user.extraQuota;
     
     if (!user.isUnlimited && user.ocrUsed >= totalOcrLimit) {
@@ -566,10 +620,10 @@ IMPORTANT:
 
     user.ocrUsed += 1;
     user.totalUsedCount += 1;
-    await redis.set(`user:${userId}`, JSON.stringify(user));
+    await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
     
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-    await logUsage(userId, ip as string, 'ocr', user.ocrUsed, user.totalUsedCount);
+    await logUsage(effectiveUserId, ip as string, 'ocr', user.ocrUsed, user.totalUsedCount);
 
     res.json(resultJson);
   } catch (error: any) {
@@ -581,13 +635,19 @@ IMPORTANT:
 // 2. Summary API
 apiRouter.post('/summary/text', async (req, res) => {
   try {
-    const { userId, examData, promptSlot, nickname, userLevel, model } = req.body;
+    const { userId, examData, promptSlot, nickname, userLevel, model, openid } = req.body;
     
-    if (!userId || !examData) {
-      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing userId or examData' });
+    if (!examData) {
+      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing examData' });
     }
 
-    const user = await getUser(userId);
+    const validation = await validateAndGetUser(openid, userId);
+    if (!validation.valid) {
+      return res.status(validation.error!.status).json(validation.error!.response);
+    }
+    
+    const user = validation.user!;
+    const effectiveUserId = validation.effectiveUserId!;
     const totalSummaryLimit = user.summaryLimit + user.extraQuota;
     
     if (!user.isUnlimited && user.summaryUsed >= totalSummaryLimit) {
@@ -611,10 +671,10 @@ apiRouter.post('/summary/text', async (req, res) => {
 
     user.summaryUsed += 1;
     user.totalUsedCount += 1;
-    await redis.set(`user:${userId}`, JSON.stringify(user));
+    await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
     
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-    await logUsage(userId, ip as string, 'summary', user.summaryUsed, user.totalUsedCount);
+    await logUsage(effectiveUserId, ip as string, 'summary', user.summaryUsed, user.totalUsedCount);
 
     res.json({
       success: true,
@@ -636,11 +696,14 @@ apiRouter.post('/summary/text', async (req, res) => {
 apiRouter.get('/user/quota', async (req, res) => {
   try {
     const userId = req.query.userId as string;
-    if (!userId) {
-      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing userId' });
+    const openid = req.query.openid as string;
+    
+    const effectiveUserId = openid || userId;
+    if (!effectiveUserId) {
+      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing openid or userId' });
     }
 
-    const user = await getUser(userId);
+    const user = await getUser(effectiveUserId);
     
     res.json({
       success: true,
@@ -664,9 +727,10 @@ apiRouter.get('/user/quota', async (req, res) => {
 // 4. Redeem API
 apiRouter.post('/user/redeem', async (req, res) => {
   try {
-    const { code, userId } = req.body;
-    if (!code || !userId) {
-      return res.status(400).json({ success: false, message: 'Missing code or userId' });
+    const { code, userId, openid } = req.body;
+    const effectiveUserId = openid || userId;
+    if (!code || !effectiveUserId) {
+      return res.status(400).json({ success: false, message: 'Missing code or openid' });
     }
 
     const redeemStr = await redis.get(`redeem:${code}`);
@@ -679,12 +743,10 @@ apiRouter.post('/user/redeem', async (req, res) => {
       return res.status(400).json({ success: false, message: '兑换码已失效' });
     }
 
-    // Update user
-    const updatedUser = await updateUser(userId, { level: redeem.type });
+    const updatedUser = await updateUser(effectiveUserId, { level: redeem.type });
 
-    // Mark code as used
     redeem.status = 'used';
-    redeem.usedBy = userId;
+    redeem.usedBy = effectiveUserId;
     redeem.usedAt = new Date().toISOString();
     await redis.set(`redeem:${code}`, JSON.stringify(redeem));
 
