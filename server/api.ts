@@ -496,13 +496,14 @@ apiRouter.post('/wx/openid', async (req, res) => {
   }
 });
 
-// Helper: Validate openid and get user
+// Helper: Validate openid and get user (supports both mini-program openid and web userId)
 async function validateAndGetUser(openid: string | undefined, userId: string | undefined) {
-  if (!openid) {
-    return { valid: false, error: { status: 401, response: { error: 'OPENID_REQUIRED', message: '缺少openid，请先登录' } } };
+  const effectiveUserId = openid || userId;
+  
+  if (!effectiveUserId) {
+    return { valid: false, error: { status: 401, response: { error: 'AUTH_REQUIRED', message: '缺少用户身份，请先登录' } } };
   }
   
-  const effectiveUserId = openid;
   const user = await getUser(effectiveUserId);
   
   return { valid: true, user, effectiveUserId };
