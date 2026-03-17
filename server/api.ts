@@ -468,13 +468,16 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
     const month = today.substring(0, 7);
     const monthCalls = await redis.get(`stats:monthlyCalls:${month}`) || 0;
     
-    // Count users (scan keys starting with user:)
     let cursor = '0';
     let totalUsers = 0;
     do {
       const [nextCursor, keys] = await redis.scan(cursor, { match: 'user:*', count: 100 });
       cursor = nextCursor;
-      totalUsers += keys.length;
+      if (keys.length > 0) {
+        const userStrs = await redis.mget(...keys);
+        const users = userStrs.filter(Boolean).map(u => typeof u === 'string' ? JSON.parse(u) : u);
+        totalUsers += users.filter((u: any) => u?.userId && !u.userId.startsWith('web_')).length;
+      }
     } while (cursor !== '0');
 
     res.json({
@@ -507,7 +510,8 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
       cursor = nextCursor;
       if (keys.length > 0) {
         const userStrs = await redis.mget(...keys);
-        users.push(...userStrs.filter(Boolean).map(u => typeof u === 'string' ? JSON.parse(u) : u));
+        const allUsers = userStrs.filter(Boolean).map(u => typeof u === 'string' ? JSON.parse(u) : u);
+        users.push(...allUsers.filter((u: any) => u?.userId && !u.userId.startsWith('web_')));
       }
     } while (cursor !== '0');
     
