@@ -38,6 +38,26 @@ interface MedicalRecord {
 }
 
 function formatToMedicalRecords(data: any): { medicalRecords: MedicalRecord[] } {
+  if (Array.isArray(data?.records) && data.records.length > 0) {
+    return {
+      medicalRecords: data.records.map((record: any) => ({
+        title: record.title || data.title || '检查报告',
+        date: record.date || new Date().toISOString().split('T')[0],
+        hospital: record.hospital || data.hospital || '',
+        doctor: record.doctor || data.doctor || '',
+        items: (record.items || []).map((item: any) => ({
+          name: item.name || '',
+          itemName: item.itemName || item.name || '',
+          value: item.value || '',
+          result: item.result || item.value || '',
+          unit: item.unit || '',
+          range: item.range || '',
+        })),
+        notes: record.notes || data.notes || '',
+      })),
+    };
+  }
+
   const record: MedicalRecord = {
     title: data.title || '检查报告',
     date: data.date || new Date().toISOString().split('T')[0],
@@ -75,32 +95,47 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
   const buildResultFromRows = (rows: any[]): any | null => {
     if (!rows.length) return null;
 
-    const firstRow = rows[0] || {};
-    const date =
-      pickField(firstRow, ['日期', '检查日期', '报告日期', 'date', 'Date']) ||
-      new Date().toISOString().split('T')[0];
-    const hospital = pickField(firstRow, ['医院', '医院名称', 'hospital', 'Hospital']);
-    const doctor = pickField(firstRow, ['医生', '医师', 'doctor', 'Doctor']);
-    const notes = pickField(firstRow, ['备注', '说明', 'notes', 'Notes']);
+    const title = fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告';
+    const dateAliases = ['日期', '检查日期', '报告日期', 'date', 'Date'];
+    const recordsByDate = new Map<
+      string,
+      { title: string; date: string; hospital: string; doctor: string; notes: string; items: Array<{ name: string; value: string; unit: string; range: string }> }
+    >();
 
-    const items = rows
-      .map((row) => ({
+    for (const row of rows) {
+      const item = {
         name: pickField(row, ['检查项目', '项目名称', '指标', 'name', 'itemName', 'Name']),
         value: pickField(row, ['检查结果', '结果', '数值', 'value', 'result', 'Result']),
         unit: pickField(row, ['单位', 'unit', 'Unit']),
         range: pickField(row, ['参考范围', '参考值', '正常范围', 'range', 'referenceRange', 'Range']),
-      }))
-      .filter((item) => item.name || item.value || item.unit || item.range);
+      };
+      if (!item.name && !item.value && !item.unit && !item.range) continue;
 
-    if (!items.length) return null;
+      const rowDate = pickField(row, dateAliases) || new Date().toISOString().split('T')[0];
+      if (!recordsByDate.has(rowDate)) {
+        recordsByDate.set(rowDate, {
+          title,
+          date: rowDate,
+          hospital: pickField(row, ['医院', '医院名称', 'hospital', 'Hospital']),
+          doctor: pickField(row, ['医生', '医师', 'doctor', 'Doctor']),
+          notes: pickField(row, ['备注', '说明', 'notes', 'Notes']),
+          items: [],
+        });
+      }
+      recordsByDate.get(rowDate)!.items.push(item);
+    }
+
+    const records = Array.from(recordsByDate.values()).filter((record) => record.items.length > 0);
+    if (!records.length) return null;
 
     return {
-      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
-      date,
-      hospital,
-      doctor,
-      notes,
-      items,
+      title,
+      date: records[0].date,
+      hospital: records[0].hospital,
+      doctor: records[0].doctor,
+      notes: records[0].notes,
+      items: records[0].items,
+      records,
     };
   };
 
@@ -136,48 +171,45 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
     let dateColIndex = headers.findIndex((header) => /日期|时间|date|day/i.test(header));
     if (dateColIndex < 0) dateColIndex = 0;
 
-    let bestRow: any[] | null = null;
-    let bestValueCount = 0;
+    const validRows: Array<{ date: string; items: Array<{ name: string; value: string; unit: string; range: string }> }> = [];
     for (const row of matrix.slice(headerRowIndex + 1)) {
       const rowCells = row || [];
       const dateValue = toText(rowCells[dateColIndex]);
       if (!dateValue) continue;
 
-      let valueCount = 0;
-      for (let i = 0; i < headers.length; i++) {
-        if (i === dateColIndex) continue;
-        const header = headers[i];
-        const value = toText(rowCells[i]);
-        if (header && value) valueCount += 1;
-      }
+      const items = headers
+        .map((header, index) => {
+          if (index === dateColIndex) return null;
+          const name = toText(header);
+          const value = toText(rowCells[index]);
+          if (!name || !value) return null;
+          return { name, value, unit: '', range: '' };
+        })
+        .filter((item): item is { name: string; value: string; unit: string; range: string } => !!item);
 
-      if (valueCount > bestValueCount) {
-        bestValueCount = valueCount;
-        bestRow = rowCells;
-      }
+      if (!items.length) continue;
+      validRows.push({ date: dateValue, items });
     }
 
-    if (!bestRow || bestValueCount === 0) return null;
+    if (!validRows.length) return null;
 
-    const items = headers
-      .map((header, index) => {
-        if (index === dateColIndex) return null;
-        const name = toText(header);
-        const value = toText(bestRow?.[index]);
-        if (!name || !value) return null;
-        return { name, value, unit: '', range: '' };
-      })
-      .filter((item): item is { name: string; value: string; unit: string; range: string } => !!item);
-
-    if (!items.length) return null;
-
-    return {
+    const records = validRows.map((row) => ({
       title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
-      date: toText(bestRow[dateColIndex]) || new Date().toISOString().split('T')[0],
+      date: row.date,
       hospital: '',
       doctor: '',
       notes: '',
-      items,
+      items: row.items,
+    }));
+
+    return {
+      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
+      date: records[0].date || new Date().toISOString().split('T')[0],
+      hospital: '',
+      doctor: '',
+      notes: '',
+      items: records[0].items,
+      records,
     };
   };
   const objectRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as any[];
@@ -389,6 +421,27 @@ export default function Home() {
     setShowHistory(false);
   };
 
+  const ocrRecords =
+    result?.type === 'ocr'
+      ? Array.isArray(result.data?.records) && result.data.records.length > 0
+        ? result.data.records
+        : [result.data]
+      : [];
+
+  const primaryOcrRecord = ocrRecords[0] || null;
+  const hasMultipleOcrRecords = ocrRecords.length > 1;
+  const ocrTableRows =
+    result?.type === 'ocr'
+      ? hasMultipleOcrRecords
+        ? ocrRecords.flatMap((record: any) =>
+            (record.items || []).map((item: any) => ({
+              ...item,
+              recordDate: record.date || '',
+            })),
+          )
+        : primaryOcrRecord?.items || []
+      : [];
+
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-900">
       <div className="mx-auto max-w-3xl space-y-8">
@@ -522,19 +575,21 @@ export default function Home() {
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <span className="text-slate-500">标题：</span>
-                    <span className="font-medium">{result.data.title}</span>
+                    <span className="font-medium">{primaryOcrRecord?.title || result.data.title}</span>
                   </div>
                   <div>
                     <span className="text-slate-500">日期：</span>
-                    <span className="font-medium">{result.data.date}</span>
+                    <span className="font-medium">
+                      {hasMultipleOcrRecords ? `共 ${ocrRecords.length} 次（最新：${primaryOcrRecord?.date || ''}）` : primaryOcrRecord?.date}
+                    </span>
                   </div>
                   <div>
                     <span className="text-slate-500">医院：</span>
-                    <span className="font-medium">{result.data.hospital}</span>
+                    <span className="font-medium">{primaryOcrRecord?.hospital || result.data.hospital}</span>
                   </div>
                   <div>
                     <span className="text-slate-500">医生：</span>
-                    <span className="font-medium">{result.data.doctor}</span>
+                    <span className="font-medium">{primaryOcrRecord?.doctor || result.data.doctor}</span>
                   </div>
                 </div>
 
@@ -542,6 +597,7 @@ export default function Home() {
                   <table className="w-full border-collapse text-left">
                     <thead>
                       <tr className="border-b border-slate-200 text-sm text-slate-500">
+                        {hasMultipleOcrRecords && <th className="py-3 font-medium">日期</th>}
                         <th className="py-3 font-medium">项目</th>
                         <th className="py-3 font-medium">结果</th>
                         <th className="py-3 font-medium">参考范围</th>
@@ -549,8 +605,9 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="text-sm">
-                      {result.data.items?.map((item: any, index: number) => (
+                      {ocrTableRows.map((item: any, index: number) => (
                         <tr key={index} className="border-b border-slate-100 last:border-0">
+                          {hasMultipleOcrRecords && <td className="py-3 text-slate-500">{item.recordDate}</td>}
                           <td className="py-3 font-medium">{item.name}</td>
                           <td className="py-3">{item.value}</td>
                           <td className="py-3 text-slate-500">{item.range}</td>
@@ -561,10 +618,10 @@ export default function Home() {
                   </table>
                 </div>
 
-                {result.data.notes && (
+                {(primaryOcrRecord?.notes || result.data.notes) && (
                   <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
                     <span className="font-semibold">备注：</span>
-                    {result.data.notes}
+                    {primaryOcrRecord?.notes || result.data.notes}
                   </div>
                 )}
               </div>
