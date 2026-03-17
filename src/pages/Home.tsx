@@ -95,6 +95,27 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
   const normalizeDate = (value: any) => {
     const text = String(value ?? '').trim();
     if (!text) return '';
+
+    if (/^\d{1,7}$/.test(text)) {
+      const serial = Number(text);
+      if (!Number.isNaN(serial) && serial >= 0 && serial <= 2958465) {
+        const wholeDays = Math.floor(serial);
+        if (wholeDays === 60) {
+          // Excel 1900 leap-year bug compatibility day
+          return '1900-02-29';
+        }
+
+        const excelEpoch = Date.UTC(1899, 11, 31);
+        const adjustedDays = wholeDays > 60 ? wholeDays - 1 : wholeDays;
+        const utcTime = excelEpoch + adjustedDays * 24 * 60 * 60 * 1000;
+        const d = new Date(utcTime);
+        const yyyy = d.getUTCFullYear();
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+    }
+
     const match = text.match(/(\d{4})[./\-年](\d{1,2})[./\-月](\d{1,2})/);
     if (match) {
       return `${match[1]}-${String(Number(match[2])).padStart(2, '0')}-${String(Number(match[3])).padStart(2, '0')}`;
