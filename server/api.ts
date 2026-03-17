@@ -223,6 +223,13 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 // Constants
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
+function formatProvinceCity(province: string, city: string, fallback: string | null = null): string | null {
+  const normalizedProvince = String(province || '').trim();
+  const normalizedCity = String(city || '').trim();
+  const location = [normalizedProvince, normalizedCity].filter(Boolean).join(' ');
+  return location || fallback;
+}
+
 const IP_API_CONFIG = {
   providers: [
     {
@@ -230,16 +237,27 @@ const IP_API_CONFIG = {
       url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
       parse: (data: any) => {
         if (data.status === 'success') {
-          const country = data.country || '';
           const province = data.regionName || '';
           const city = data.city || '';
-          return [country, province, city].filter(Boolean).join(' ') || null;
+          return formatProvinceCity(province, city, null);
         }
         return null;
       }
+    },
+    {
+      name: 'freeipapi',
+      url: (ip: string) => `https://freeipapi.com/api/json/${ip}`,
+      parse: (data: any) => {
+        if (!data) {
+          return null;
+        }
+        const province = data.regionName || '';
+        const city = data.cityName || '';
+        return formatProvinceCity(province, city, null);
+      }
     }
   ].filter(p => {
-    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api').split(',').map(s => s.trim());
+    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api,freeipapi').split(',').map(s => s.trim());
     return enabledProviders.includes(p.name);
   }),
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
@@ -839,10 +857,12 @@ async function getIpLocation(ip: string): Promise<string> {
   if (ipLocationCache.has(ip)) {
     return ipLocationCache.get(ip)!;
   }
+
+  const fallbackLocation = ip;
   
   if (!(await checkIpApiRateLimit())) {
     console.warn('IP API rate limit exceeded, skipping location lookup');
-    return '\u672a\u77e5';
+    return fallbackLocation;
   }
   
   const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
@@ -884,7 +904,7 @@ async function getIpLocation(ip: string): Promise<string> {
     }
   }
   
-  return '\u672a\u77e5';
+  return fallbackLocation;
 }
 
 async function logUsage(userId: string, ip: string, feature: string, monthlyUsedCount: number, totalUsedCount: number) {
