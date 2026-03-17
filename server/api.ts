@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Redis as UpstashRedis } from '@upstash/redis';
 import Redis from 'ioredis';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
 
@@ -314,6 +314,280 @@ async function updateLevelConfigs(configs: Record<string, LevelConfig>): Promise
   await redis.set('level_configs', JSON.stringify(configs));
 }
 
+type SummaryPromptKey = 'slot1';
+
+interface SummaryPromptSlot {
+  name: string;
+  prompt: string;
+  description: string;
+}
+
+type SummaryPrompts = Record<SummaryPromptKey, SummaryPromptSlot>;
+
+interface OcrItem {
+  name: string;
+  value: string;
+  unit: string;
+  range: string;
+}
+
+interface OcrResult {
+  title: string;
+  date: string;
+  hospital: string;
+  doctor: string;
+  notes: string;
+  items: OcrItem[];
+}
+
+const SUMMARY_PROMPT_KEYS: SummaryPromptKey[] = ['slot1'];
+
+const DEFAULT_SUMMARY_PROMPTS: SummaryPrompts = {
+  slot1: { name: 'Slot 1', prompt: '', description: 'Not configured' },
+};
+
+const IMAGE_SYSTEM_PROMPT = `You are a medical data extraction assistant.
+Extract structured data from a medical report image.
+
+Return ONLY a valid JSON object with this exact structure:
+{
+  "title": "short report title",
+  "date": "YYYY-MM-DD",
+  "hospital": "hospital name or empty string",
+  "doctor": "doctor name or empty string",
+  "notes": "short note or empty string",
+  "items": [
+    {
+      "name": "test item name",
+      "value": "test value as string",
+      "unit": "unit or empty string",
+      "range": "reference range or empty string"
+    }
+  ]
+}
+
+Rules:
+1. Do not output markdown, explanations, or any extra text.
+2. title must be short; never put full report content into title.
+3. date must be a string in YYYY-MM-DD format.
+4. items must only include name/value/unit/range.
+5. If no item is readable, return empty items array but keep full object shape.`;
+
+const SUMMARY_FALLBACK_PROMPT = `You are a professional kidney-disease assistant.
+Summarize exam data in clear Chinese for patients.
+Highlight abnormal indicators first, then give practical advice.
+Do not invent values that are not present in the data.`;
+
+const DEFAULT_OCR_RESULT = (): OcrResult => ({
+  title: '',
+  date: new Date().toISOString().slice(0, 10),
+  hospital: '',
+  doctor: '',
+  notes: '',
+  items: [],
+});
+
+function isSummaryPromptKey(value: unknown): value is SummaryPromptKey {
+  return typeof value === 'string' && SUMMARY_PROMPT_KEYS.includes(value as SummaryPromptKey);
+}
+
+function toText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function formatDate(year: number, month: number, day: number): string {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  const yyyy = String(year).padStart(4, '0');
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function normalizeDateValue(value: unknown): string {
+  const raw = toText(value).trim();
+  if (!raw) return new Date().toISOString().slice(0, 10);
+
+  const dateMatch = raw.match(/(\d{4})[\/.\-年](\d{1,2})[\/.\-月](\d{1,2})/);
+  if (dateMatch) {
+    return formatDate(Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]));
+  }
+
+  if (/^\d{10,13}$/.test(raw)) {
+    const ts = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
+    const d = new Date(ts);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toISOString().slice(0, 10);
+    }
+  }
+
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeItems(items: unknown): OcrItem[] {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const name = toText(row.name ?? row.itemName ?? row.item ?? row.testName).trim();
+      const value = toText(row.value ?? row.result ?? row.testValue).trim();
+      const unit = toText(row.unit).trim();
+      const range = toText(row.range ?? row.reference ?? row.referenceRange ?? row.refRange).trim();
+      if (!name && !value && !unit && !range) return null;
+      return { name, value, unit, range };
+    })
+    .filter((item): item is OcrItem => item !== null);
+}
+
+function normalizeOcrResult(payload: unknown): OcrResult {
+  const fallback = DEFAULT_OCR_RESULT();
+  if (!payload || typeof payload !== 'object') return fallback;
+
+  const root = payload as Record<string, unknown>;
+  const candidate =
+    root.data && typeof root.data === 'object'
+      ? (root.data as Record<string, unknown>)
+      : root;
+
+  const title = toText(candidate.title).trim().slice(0, 120);
+  const hospital = toText(candidate.hospital).trim().slice(0, 120);
+  const doctor = toText(candidate.doctor).trim().slice(0, 80);
+  const notes = toText(candidate.notes).trim().slice(0, 500);
+  const date = normalizeDateValue(candidate.date);
+  const items = normalizeItems(candidate.items);
+
+  return {
+    title,
+    date,
+    hospital,
+    doctor,
+    notes,
+    items,
+  };
+}
+
+function findJsonEnd(text: string, startIndex: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function cleanJsonString(text: string): string {
+  if (!text) return '{}';
+  let clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  if (firstBrace < 0) return '{}';
+  const endBrace = findJsonEnd(clean, firstBrace);
+  if (endBrace >= 0) {
+    clean = clean.slice(firstBrace, endBrace + 1);
+  } else {
+    const fallbackEnd = clean.lastIndexOf('}');
+    if (fallbackEnd <= firstBrace) return '{}';
+    clean = clean.slice(firstBrace, fallbackEnd + 1);
+  }
+  clean = clean.replace(/^\uFEFF/, '');
+  clean = clean.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+  clean = clean.replace(/,(\s*[}\]])/g, '$1');
+  return clean;
+}
+
+function safeJsonParse(text: string): unknown {
+  const cleaned = cleanJsonString(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    try {
+      const aggressive = cleaned
+        .replace(/\r/g, ' ')
+        .replace(/\n/g, ' ')
+        .replace(/\t/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return JSON.parse(aggressive);
+    } catch {
+      return {};
+    }
+  }
+}
+
+function normalizeSummaryPrompts(payload: unknown): SummaryPrompts {
+  const normalized: SummaryPrompts = {
+    slot1: { ...DEFAULT_SUMMARY_PROMPTS.slot1 },
+  };
+
+  if (!payload || typeof payload !== 'object') {
+    return normalized;
+  }
+
+  const raw = payload as Record<string, unknown>;
+  for (const key of SUMMARY_PROMPT_KEYS) {
+    const slot = raw[key];
+    if (!slot || typeof slot !== 'object') continue;
+    const slotObj = slot as Record<string, unknown>;
+    normalized[key] = {
+      name: toText(slotObj.name).trim() || normalized[key].name,
+      prompt: toText(slotObj.prompt),
+      description: toText(slotObj.description).trim() || normalized[key].description,
+    };
+  }
+
+  return normalized;
+}
+
+async function getSummaryPrompts(): Promise<SummaryPrompts> {
+  try {
+    const saved = await redis.get('summary:prompts');
+    if (!saved) {
+      const defaults = normalizeSummaryPrompts(DEFAULT_SUMMARY_PROMPTS);
+      await redis.set('summary:prompts', JSON.stringify(defaults));
+      return defaults;
+    }
+    const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
+    return normalizeSummaryPrompts(parsed);
+  } catch (error) {
+    console.error('Failed to load summary prompts:', error);
+    return normalizeSummaryPrompts(DEFAULT_SUMMARY_PROMPTS);
+  }
+}
+
+async function saveSummaryPrompts(prompts: SummaryPrompts): Promise<void> {
+  const normalized = normalizeSummaryPrompts(prompts);
+  await redis.set('summary:prompts', JSON.stringify(normalized));
+}
+
 // Helper: Check Admin Auth
 const checkAdmin = (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
@@ -518,7 +792,6 @@ async function validateAndGetUser(openid: string | undefined, userId: string | u
 apiRouter.post('/analyze/image-base64', async (req, res) => {
   try {
     const { base64, mimeType, userId, nickname, openid } = req.body;
-    
     if (!base64) {
       return res.status(400).json({ error: 'INVALID_REQUEST', message: 'Missing base64' });
     }
@@ -527,54 +800,17 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     if (!validation.valid) {
       return res.status(validation.error!.status).json(validation.error!.response);
     }
-    
+
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
     const totalOcrLimit = user.ocrLimit + user.extraQuota;
-    
     if (!user.isUnlimited && user.ocrUsed >= totalOcrLimit) {
-      return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: '本月免费额度已用完' });
+      return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: 'Monthly OCR quota exceeded' });
     }
 
     const configs = await getLevelConfigs();
     const levelConfig = configs[user.level] || configs.care;
     const modelToUse = levelConfig.ocrModel;
-
-    const SYSTEM_INSTRUCTION = `You are a medical data assistant for kidney disease patients.
-Your task is to extract medical examination data from images and convert it into a structured JSON object.
-
-Output Rules:
-1. Return ONLY a valid JSON object, no extra text.
-2. The JSON must match this structure EXACTLY:
-{
-  "title": "检查报告标题",
-  "date": "YYYY-MM-DD格式的日期字符串",
-  "hospital": "医院名称",
-  "doctor": "医生姓名（如无则留空字符串）",
-  "notes": "备注信息（如无则留空字符串）",
-  "items": [
-    {
-      "name": "检查项名称",
-      "value": "检测值（字符串）",
-      "unit": "单位",
-      "range": "参考范围"
-    }
-  ]
-}
-
-CRITICAL INSTRUCTIONS FOR ITEMS EXTRACTION:
-- You MUST extract ALL test items/indicators from the image
-- Each row in a medical report table represents ONE item
-- Look for columns like: 检查项目/项目名称, 结果/检测值, 单位, 参考范围/正常值
-- Common medical indicators include: 尿蛋白, 肌酐, 尿素氮, 白蛋白, 血红蛋白, etc.
-- If you see a table with multiple test items, extract EACH ONE as a separate item
-- Do NOT leave the items array empty if there is data in the image
-
-IMPORTANT:
-- date MUST be a STRING in format "YYYY-MM-DD" (e.g. "2025-12-15"), NOT a timestamp number
-- items array should only contain: name, value, unit, range
-- Do NOT add fields like "id", "categoryName", "configName"
-- If the image is unclear or no medical data is found, still return the structure with empty items array`;
 
     const response = await ai.models.generateContent({
       model: modelToUse,
@@ -588,46 +824,25 @@ IMPORTANT:
               },
             },
             {
-              text: 'Carefully examine this medical report image. Extract ALL test items/indicators from any tables or lists. Each test item should have: name (检查项目名称), value (检测结果数值), unit (单位), range (参考范围). Return as JSON.',
+              text: 'Extract structured medical report data from this image.',
             },
           ],
         },
       ],
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
+        systemInstruction: IMAGE_SYSTEM_PROMPT,
         responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            date: { type: Type.STRING },
-            hospital: { type: Type.STRING },
-            doctor: { type: Type.STRING },
-            notes: { type: Type.STRING },
-            items: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  value: { type: Type.STRING },
-                  unit: { type: Type.STRING },
-                  range: { type: Type.STRING }
-                }
-              }
-            }
-          }
-        }
-      }
+      },
     });
 
     const resultText = response.text || '{}';
-    const resultJson = JSON.parse(resultText);
+    const parsed = safeJsonParse(resultText);
+    const resultJson = normalizeOcrResult(parsed);
 
     user.ocrUsed += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
-    
+
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
     await logUsage(effectiveUserId, ip as string, 'ocr', user.ocrUsed, user.totalUsedCount);
 
@@ -642,35 +857,41 @@ IMPORTANT:
 apiRouter.post('/summary/text', async (req, res) => {
   try {
     const { userId, examData, promptSlot, nickname, userLevel, model, openid } = req.body;
-    
-    if (!examData) {
-      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing examData' });
+    if (!examData || !Array.isArray(examData.items) || examData.items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_REQUEST',
+        message: 'Missing examData items',
+      });
     }
 
     const validation = await validateAndGetUser(openid, userId);
     if (!validation.valid) {
       return res.status(validation.error!.status).json(validation.error!.response);
     }
-    
+
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
     const totalSummaryLimit = user.summaryLimit + user.extraQuota;
-    
     if (!user.isUnlimited && user.summaryUsed >= totalSummaryLimit) {
-      return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: '本月次数已用完' });
+      return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: 'Monthly summary quota exceeded' });
     }
 
     const configs = await getLevelConfigs();
     const levelConfig = configs[user.level] || configs.care;
     const modelToUse = levelConfig.summaryModel;
 
-    const prompt = `Please provide a smart summary for the following medical exam data.
-    Data: ${JSON.stringify(examData)}
-    Provide a concise, professional, and easy-to-understand summary of the indicators. Highlight any abnormalities.`;
+    const prompts = await getSummaryPrompts();
+    const requestedSlot = isSummaryPromptKey(promptSlot) ? promptSlot : 'slot1';
+    const finalPrompt = prompts[requestedSlot].prompt.trim() || SUMMARY_FALLBACK_PROMPT;
 
+    const prompt = `Exam data JSON:\n${JSON.stringify(examData, null, 2)}\n\nPlease generate the final summary in Chinese.`;
     const response = await ai.models.generateContent({
       model: modelToUse,
       contents: prompt,
+      config: {
+        systemInstruction: finalPrompt,
+      },
     });
 
     const summary = response.text || 'No summary generated.';
@@ -678,7 +899,7 @@ apiRouter.post('/summary/text', async (req, res) => {
     user.summaryUsed += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
-    
+
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
     await logUsage(effectiveUserId, ip as string, 'summary', user.summaryUsed, user.totalUsedCount);
 
@@ -686,11 +907,11 @@ apiRouter.post('/summary/text', async (req, res) => {
       success: true,
       summary,
       quota: {
-        remaining: user.isUnlimited ? 9999 : (totalSummaryLimit - user.summaryUsed),
+        remaining: user.isUnlimited ? 9999 : totalSummaryLimit - user.summaryUsed,
         used: user.summaryUsed,
         limit: totalSummaryLimit,
-        resetAt: '2026-04-01 00:00:00'
-      }
+        resetAt: '2026-04-01 00:00:00',
+      },
     });
   } catch (error: any) {
     console.error('Summary Error:', error);
@@ -937,6 +1158,38 @@ apiRouter.post('/admin/level-configs', checkAdmin, async (req, res) => {
   }
 });
 
+apiRouter.get('/admin/summary/prompts', checkAdmin, async (req, res) => {
+  try {
+    const prompts = await getSummaryPrompts();
+    res.json({ success: true, prompts });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+apiRouter.put('/admin/summary/prompts', checkAdmin, async (req, res) => {
+  try {
+    const { slot, name, prompt, description } = req.body || {};
+    const targetSlot: SummaryPromptKey = isSummaryPromptKey(slot) ? slot : 'slot1';
+    const prompts = await getSummaryPrompts();
+    const current = prompts[targetSlot];
+    prompts[targetSlot] = {
+      name: typeof name === 'string' && name.trim() ? name.trim() : current.name,
+      prompt: typeof prompt === 'string' ? prompt : current.prompt,
+      description:
+        typeof description === 'string' && description.trim()
+          ? description.trim()
+          : current.description,
+    };
+    await saveSummaryPrompts(prompts);
+    res.json({
+      success: true,
+      message: `${targetSlot} prompt updated`,
+      prompts,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 apiRouter.use((err: any, req: any, res: any, next: any) => {
   console.error('API Error:', err);
   res.status(500).json({ 
@@ -944,3 +1197,4 @@ apiRouter.use((err: any, req: any, res: any, next: any) => {
     message: err.message || 'An unexpected error occurred' 
   });
 });
+

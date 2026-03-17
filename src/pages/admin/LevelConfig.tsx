@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Save, RefreshCw, Shield, Star, Crown } from 'lucide-react';
+import { Settings, Save, RefreshCw, Shield, Star, Crown, MessageSquareText } from 'lucide-react';
 
 interface LevelConfig {
   ocrLimit: number;
@@ -13,45 +13,86 @@ interface ConfigData {
   supportedModels: string[];
 }
 
+type SummaryPromptKey = 'slot1';
+
+interface SummaryPromptSlot {
+  name: string;
+  prompt: string;
+  description: string;
+}
+
+type SummaryPrompts = Record<SummaryPromptKey, SummaryPromptSlot>;
+
+const defaultSummaryPrompts: SummaryPrompts = {
+  slot1: { name: 'Slot 1', prompt: '', description: 'Not configured' },
+};
+
 const levelInfo = {
-  care: { label: 'Care', icon: Shield, color: 'slate', desc: '基础用户等级' },
-  care_plus: { label: 'Care+', icon: Star, color: 'indigo', desc: '进阶用户等级' },
-  king: { label: 'King', icon: Crown, color: 'amber', desc: '高级用户等级' }
+  care: { label: 'Care', icon: Shield, color: 'slate', desc: 'Basic users' },
+  care_plus: { label: 'Care+', icon: Star, color: 'indigo', desc: 'Advanced users' },
+  king: { label: 'King', icon: Crown, color: 'amber', desc: 'Top-tier users' }
 };
 
 export default function LevelConfig() {
   const [configData, setConfigData] = useState<ConfigData | null>(null);
   const [configs, setConfigs] = useState<Record<string, LevelConfig>>({});
+  const [summaryPrompts, setSummaryPrompts] = useState<SummaryPrompts>(defaultSummaryPrompts);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [savingLevel, setSavingLevel] = useState(false);
+  const [savingSlot, setSavingSlot] = useState(false);
+  const [levelMessage, setLevelMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [slotMessage, setSlotMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const fetchConfig = async () => {
+    const token = localStorage.getItem('adminToken');
+    const res = await fetch('/api/admin/level-configs', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      throw new Error('Failed to load level configs');
+    }
+    const data = await res.json();
+    setConfigData(data);
+    setConfigs(data.configs || {});
+  };
+
+  const fetchSummaryPrompts = async () => {
+    const token = localStorage.getItem('adminToken');
+    const res = await fetch('/api/admin/summary/prompts', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      throw new Error('Failed to load summary prompts');
+    }
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error('Invalid summary prompts response');
+    }
+    const slot1 = data.prompts?.slot1 || data.prompt || {};
+    setSummaryPrompts({
+      slot1: { ...defaultSummaryPrompts.slot1, ...slot1 },
+    });
+  };
+
+  const reloadAll = async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('adminToken');
-      const res = await fetch('/api/admin/level-configs', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setConfigData(data);
-        setConfigs(data.configs);
-      }
+      await Promise.all([fetchConfig(), fetchSummaryPrompts()]);
     } catch (err) {
       console.error(err);
+      setLevelMessage({ type: 'error', text: 'Load failed. Please refresh.' });
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchConfig();
+    reloadAll();
   }, []);
 
-  const handleSave = async () => {
-    setSaving(true);
-    setMessage(null);
+  const handleSaveLevelConfig = async () => {
+    setSavingLevel(true);
+    setLevelMessage(null);
     try {
       const token = localStorage.getItem('adminToken');
       const res = await fetch('/api/admin/level-configs', {
@@ -62,16 +103,16 @@ export default function LevelConfig() {
         },
         body: JSON.stringify({ configs })
       });
-      if (res.ok) {
-        setMessage({ type: 'success', text: '配置保存成功！' });
-        setTimeout(() => setMessage(null), 3000);
-      } else {
-        setMessage({ type: 'error', text: '保存失败，请重试' });
+      if (!res.ok) {
+        throw new Error('Save failed');
       }
+      setLevelMessage({ type: 'success', text: 'Level config saved.' });
+      setTimeout(() => setLevelMessage(null), 3000);
     } catch (err) {
-      setMessage({ type: 'error', text: '保存失败，请重试' });
+      console.error(err);
+      setLevelMessage({ type: 'error', text: 'Save failed. Please retry.' });
     } finally {
-      setSaving(false);
+      setSavingLevel(false);
     }
   };
 
@@ -83,6 +124,58 @@ export default function LevelConfig() {
         [field]: value
       }
     }));
+  };
+
+  const updatePromptSlot = (field: keyof SummaryPromptSlot, value: string) => {
+    setSummaryPrompts(prev => ({
+      ...prev,
+      slot1: {
+        ...prev.slot1,
+        [field]: value
+      }
+    }));
+  };
+
+  const handleSavePromptSlot = async () => {
+    setSavingSlot(true);
+    setSlotMessage(null);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const slotData = summaryPrompts.slot1;
+      const res = await fetch('/api/admin/summary/prompts', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          slot: 'slot1',
+          name: slotData.name,
+          prompt: slotData.prompt,
+          description: slotData.description
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Save failed');
+      }
+
+      if (data.prompts?.slot1 || data.prompt) {
+        const slot1 = data.prompts?.slot1 || data.prompt || {};
+        setSummaryPrompts({
+          slot1: { ...defaultSummaryPrompts.slot1, ...slot1 },
+        });
+      }
+
+      setSlotMessage({ type: 'success', text: 'Prompt saved.' });
+      setTimeout(() => setSlotMessage(null), 2500);
+    } catch (err) {
+      console.error(err);
+      setSlotMessage({ type: 'error', text: 'Prompt save failed.' });
+    } finally {
+      setSavingSlot(false);
+    }
   };
 
   const getColorClasses = (color: string) => {
@@ -106,30 +199,31 @@ export default function LevelConfig() {
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">等级配置</h2>
-          <p className="text-slate-500 mt-2">配置各用户等级的次数限制和模型设置</p>
+          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Level Config</h2>
+          <p className="text-slate-500 mt-2">Manage quotas, models, and summary prompt slot.</p>
         </div>
         <div className="flex items-center space-x-3">
           <button
-            onClick={fetchConfig}
+            onClick={reloadAll}
             className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors text-slate-600"
+            title="Refresh"
           >
             <RefreshCw size={20} />
           </button>
           <button
-            onClick={handleSave}
-            disabled={saving}
+            onClick={handleSaveLevelConfig}
+            disabled={savingLevel}
             className="flex items-center space-x-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors font-medium disabled:opacity-50"
           >
             <Save size={18} />
-            <span>{saving ? '保存中...' : '保存配置'}</span>
+            <span>{savingLevel ? 'Saving...' : 'Save Level Config'}</span>
           </button>
         </div>
       </div>
 
-      {message && (
-        <div className={`p-4 rounded-xl ${message.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-          {message.text}
+      {levelMessage && (
+        <div className={`p-4 rounded-xl ${levelMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+          {levelMessage.text}
         </div>
       )}
 
@@ -155,24 +249,24 @@ export default function LevelConfig() {
                 <div className="space-y-4">
                   <h4 className="font-medium text-slate-700 flex items-center space-x-2">
                     <Settings size={16} />
-                    <span>次数限制</span>
+                    <span>Quota</span>
                   </h4>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm text-slate-500 mb-1">智能OCR 次数/月</label>
+                      <label className="block text-sm text-slate-500 mb-1">OCR / month</label>
                       <input
                         type="number"
                         value={config?.ocrLimit || 0}
-                        onChange={(e) => updateConfig(level, 'ocrLimit', parseInt(e.target.value) || 0)}
+                        onChange={(e) => updateConfig(level, 'ocrLimit', parseInt(e.target.value, 10) || 0)}
                         className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm text-slate-500 mb-1">智能小结 次数/月</label>
+                      <label className="block text-sm text-slate-500 mb-1">Summary / month</label>
                       <input
                         type="number"
                         value={config?.summaryLimit || 0}
-                        onChange={(e) => updateConfig(level, 'summaryLimit', parseInt(e.target.value) || 0)}
+                        onChange={(e) => updateConfig(level, 'summaryLimit', parseInt(e.target.value, 10) || 0)}
                         className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>
@@ -182,11 +276,11 @@ export default function LevelConfig() {
                 <div className="space-y-4">
                   <h4 className="font-medium text-slate-700 flex items-center space-x-2">
                     <Settings size={16} />
-                    <span>模型配置</span>
+                    <span>Model</span>
                   </h4>
                   <div className="space-y-3">
                     <div>
-                      <label className="block text-sm text-slate-500 mb-1">智能OCR 模型</label>
+                      <label className="block text-sm text-slate-500 mb-1">OCR model</label>
                       <select
                         value={config?.ocrModel || ''}
                         onChange={(e) => updateConfig(level, 'ocrModel', e.target.value)}
@@ -198,7 +292,7 @@ export default function LevelConfig() {
                       </select>
                     </div>
                     <div>
-                      <label className="block text-sm text-slate-500 mb-1">智能小结 模型</label>
+                      <label className="block text-sm text-slate-500 mb-1">Summary model</label>
                       <select
                         value={config?.summaryModel || ''}
                         onChange={(e) => updateConfig(level, 'summaryModel', e.target.value)}
@@ -217,15 +311,68 @@ export default function LevelConfig() {
         })}
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
-        <h4 className="font-medium text-blue-700 mb-2">配置说明</h4>
-        <ul className="text-sm text-blue-600 space-y-1">
-          <li>• 次数限制：每月可使用次数，King 等级建议设置为 9999 表示无限制</li>
-          <li>• 模型配置：不同等级可使用不同性能的 Gemini 模型</li>
-          <li>• 修改配置后点击「保存配置」即可生效，新用户将使用新配置</li>
-          <li>• 已有用户的额度需要手动调整或在等级变更时自动更新</li>
-        </ul>
-      </div>
+      <section className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
+        <div className="flex items-center space-x-2 text-slate-900">
+          <MessageSquareText size={20} />
+          <h3 className="text-xl font-semibold">Summary Prompt</h3>
+        </div>
+        <p className="text-sm text-slate-500">
+          This app now uses one prompt slot (`slot1`). Mini-program can keep using `promptSlot: "slot1"`.
+        </p>
+
+        {slotMessage && (
+          <div className={`p-3 rounded-xl text-sm ${slotMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+            {slotMessage.text}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-5">
+          <div className="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-slate-800">slot1</h4>
+              <span className="text-xs text-slate-500">
+                {summaryPrompts.slot1.prompt.trim() ? 'Configured' : 'Not configured'}
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Name</label>
+              <input
+                value={summaryPrompts.slot1.name}
+                onChange={(e) => updatePromptSlot('name', e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Description</label>
+              <input
+                value={summaryPrompts.slot1.description}
+                onChange={(e) => updatePromptSlot('description', e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Prompt</label>
+              <textarea
+                rows={10}
+                value={summaryPrompts.slot1.prompt}
+                onChange={(e) => updatePromptSlot('prompt', e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
+              />
+            </div>
+
+            <button
+              onClick={handleSavePromptSlot}
+              disabled={savingSlot}
+              className="w-full py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-60"
+            >
+              {savingSlot ? 'Saving...' : 'Save Prompt'}
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
