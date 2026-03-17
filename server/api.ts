@@ -144,7 +144,20 @@ function getRedisClient(): RedisClient {
     return redisClient;
   }
 
+  console.warn('Redis configuration missing. Please set either REDIS_URL or (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
   throw new Error('Redis configuration missing. Please set either REDIS_URL or (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
+}
+
+export async function checkRedisConnection(): Promise<boolean> {
+  try {
+    const client = getRedisClient();
+    await client.get('health:check');
+    console.log('Redis connection: OK');
+    return true;
+  } catch (error) {
+    console.error('Redis connection: FAILED', error);
+    return false;
+  }
 }
 
 // Lazily initialized Redis client wrapper
@@ -660,4 +673,12 @@ apiRouter.post('/admin/level-configs', checkAdmin, async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+apiRouter.use((err: any, req: any, res: any, next: any) => {
+  console.error('API Error:', err);
+  res.status(500).json({ 
+    error: 'INTERNAL_ERROR', 
+    message: err.message || 'An unexpected error occurred' 
+  });
 });

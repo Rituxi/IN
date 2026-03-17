@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { apiRouter } from './server/api.js';
+import { apiRouter, checkRedisConnection } from './server/api.js';
 import 'dotenv/config';
 
 declare const __dirname: string;
@@ -9,11 +9,22 @@ async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
+  console.log('Checking Redis connection...');
+  const redisOk = await checkRedisConnection();
+  if (!redisOk) {
+    console.error('Redis connection failed. Server will continue but may not work properly.');
+  }
+
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  app.get('/api/health', async (req, res) => {
+    const redisConnected = await checkRedisConnection().catch(() => false);
+    res.json({ 
+      status: redisConnected ? 'ok' : 'degraded', 
+      redis: redisConnected ? 'connected' : 'disconnected',
+      timestamp: new Date().toISOString() 
+    });
   });
 
   app.use('/api', apiRouter);
@@ -39,4 +50,16 @@ async function startServer() {
   });
 }
 
-startServer();
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+startServer().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
