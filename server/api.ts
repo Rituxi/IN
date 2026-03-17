@@ -496,7 +496,12 @@ apiRouter.post('/wx/openid', async (req, res) => {
   }
 });
 
-// Helper: Validate openid and get user (supports both mini-program openid and web userId)
+/**
+ * Validate user identity and get user data
+ * @param openid - WeChat mini-program user identifier (higher priority)
+ * @param userId - Web platform user identifier (fallback)
+ * @returns User validation result with user data
+ */
 async function validateAndGetUser(openid: string | undefined, userId: string | undefined) {
   const effectiveUserId = openid || userId;
   
