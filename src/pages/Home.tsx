@@ -81,7 +81,7 @@ function isExcelFile(file: File): boolean {
   return /\.xlsx?$/i.test(file.name);
 }
 
-function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any {
+async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): Promise<any> {
   const pickField = (row: any, aliases: string[]) => {
     for (const key of aliases) {
       const value = row?.[key];
@@ -92,15 +92,21 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
     return '';
   };
 
+  const normalizeDate = (value: any) => {
+    const text = String(value ?? '').trim();
+    if (!text) return '';
+    const match = text.match(/(\d{4})[./\-年](\d{1,2})[./\-月](\d{1,2})/);
+    if (match) {
+      return `${match[1]}-${String(Number(match[2])).padStart(2, '0')}-${String(Number(match[3])).padStart(2, '0')}`;
+    }
+    return text;
+  };
+
   const buildResultFromRows = (rows: any[]): any | null => {
     if (!rows.length) return null;
-
     const title = fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告';
     const dateAliases = ['日期', '检查日期', '报告日期', 'date', 'Date'];
-    const recordsByDate = new Map<
-      string,
-      { title: string; date: string; hospital: string; doctor: string; notes: string; items: Array<{ name: string; value: string; unit: string; range: string }> }
-    >();
+    const recordsByDate = new Map<string, any>();
 
     for (const row of rows) {
       const item = {
@@ -111,7 +117,7 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
       };
       if (!item.name && !item.value && !item.unit && !item.range) continue;
 
-      const rowDate = pickField(row, dateAliases) || new Date().toISOString().split('T')[0];
+      const rowDate = normalizeDate(pickField(row, dateAliases)) || new Date().toISOString().split('T')[0];
       if (!recordsByDate.has(rowDate)) {
         recordsByDate.set(rowDate, {
           title,
@@ -122,7 +128,7 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
           items: [],
         });
       }
-      recordsByDate.get(rowDate)!.items.push(item);
+      recordsByDate.get(rowDate).items.push(item);
     }
 
     const records = Array.from(recordsByDate.values()).filter((record) => record.items.length > 0);
@@ -139,155 +145,139 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
     };
   };
 
-  // 兜底支持“宽表”格式：第一行是项目名，第一列是日期，每一行是一组检查结果
-  const buildResultFromWideTable = (matrix: any[][]): any | null => {
+  const buildResultFromWideTable = (
+    matrix: any[][],
+    aiMap: { dateColumnIndex: number; mappings: Array<{ columnIndex: number; id?: string; name?: string; category?: string }> } | null,
+  ): any | null => {
     if (!matrix.length) return null;
-
     const toText = (value: any) => String(value ?? '').trim();
-    const isNumericLike = (value: string) => /^[-+]?\d+(\.\d+)?([↑↓]|\[[^\]]+\])?$/u.test(value);
 
     let headerRowIndex = -1;
-    let bestHeaderScore = -1;
-    const scanCount = Math.min(matrix.length, 10);
+    let bestScore = -1;
+    const scanCount = Math.min(matrix.length, 20);
     for (let i = 0; i < scanCount; i++) {
-      const cells = (matrix[i] || []).map(toText);
-      const nonEmpty = cells.filter((cell) => cell.length > 0);
-      if (nonEmpty.length < 3) continue;
-
-      const numericLikeCount = nonEmpty.filter((cell) => isNumericLike(cell)).length;
-      const textLikeCount = nonEmpty.length - numericLikeCount;
-      const score = nonEmpty.length * 2 + textLikeCount - numericLikeCount * 2;
-      if (score > bestHeaderScore) {
-        bestHeaderScore = score;
+      const row = matrix[i] || [];
+      const textCells = row.map(toText).filter(Boolean);
+      if (textCells.length < 3) continue;
+      const score = textCells.length;
+      if (score > bestScore) {
+        bestScore = score;
         headerRowIndex = i;
       }
     }
-
     if (headerRowIndex < 0) return null;
 
-    const headers = (matrix[headerRowIndex] || []).map(toText);
-    if (headers.filter((header) => header).length < 3) return null;
+    const headerRow = matrix[headerRowIndex] || [];
+    const headerMap = headerRow.map((cell: any, index: number) => ({ index, text: toText(cell) }));
+    const nonEmptyHeaders = headerMap.filter((h) => h.text);
+    if (nonEmptyHeaders.length < 3) return null;
 
-    let dateColIndex = headers.findIndex((header) => /日期|时间|date|day/i.test(header));
-    if (dateColIndex < 0) dateColIndex = 0;
+    let dateColIndex = aiMap?.dateColumnIndex ?? -1;
+    if (!Number.isInteger(dateColIndex) || dateColIndex < 0 || dateColIndex >= headerRow.length) {
+      const detected = headerMap.find((h) => /日期|时间|date|day/i.test(h.text));
+      dateColIndex = detected ? detected.index : 0;
+    }
 
-    const validRows: Array<{ date: string; items: Array<{ name: string; value: string; unit: string; range: string }> }> = [];
+    let itemColumns = (aiMap?.mappings || [])
+      .filter((m) => Number.isInteger(m.columnIndex) && m.columnIndex >= 0 && m.columnIndex < headerRow.length && m.columnIndex !== dateColIndex)
+      .map((m) => ({
+        columnIndex: m.columnIndex,
+        name: toText(m.name) || toText(headerRow[m.columnIndex]),
+      }));
+
+    if (!itemColumns.length) {
+      itemColumns = headerMap
+        .filter((h) => h.index !== dateColIndex && h.text)
+        .map((h) => ({ columnIndex: h.index, name: h.text }));
+    }
+
+    const records: any[] = [];
     for (const row of matrix.slice(headerRowIndex + 1)) {
       const rowCells = row || [];
-      const dateValue = toText(rowCells[dateColIndex]);
+      const rawDate = toText(rowCells[dateColIndex]);
+      const dateValue = normalizeDate(rawDate);
       if (!dateValue) continue;
 
-      const items = headers
-        .map((header, index) => {
-          if (index === dateColIndex) return null;
-          const name = toText(header);
-          const value = toText(rowCells[index]);
-          if (!name || !value) return null;
-          return { name, value, unit: '', range: '' };
+      const items = itemColumns
+        .map((col) => {
+          const value = toText(rowCells[col.columnIndex]);
+          if (!value) return null;
+          return { name: col.name, value, unit: '', range: '' };
         })
         .filter((item): item is { name: string; value: string; unit: string; range: string } => !!item);
 
       if (!items.length) continue;
-      validRows.push({ date: dateValue, items });
+
+      records.push({
+        title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
+        date: dateValue,
+        hospital: '',
+        doctor: '',
+        notes: '',
+        items,
+      });
     }
 
-    if (!validRows.length) return null;
-
-    const records = validRows.map((row) => ({
-      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
-      date: row.date,
-      hospital: '',
-      doctor: '',
-      notes: '',
-      items: row.items,
-    }));
-
+    if (!records.length) return null;
     return {
-      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
-      date: records[0].date || new Date().toISOString().split('T')[0],
-      hospital: '',
-      doctor: '',
-      notes: '',
+      title: records[0].title,
+      date: records[0].date,
+      hospital: records[0].hospital,
+      doctor: records[0].doctor,
+      notes: records[0].notes,
       items: records[0].items,
       records,
     };
   };
+
   const objectRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as any[];
   const directResult = buildResultFromRows(objectRows);
-  if (directResult) {
-    return directResult;
-  }
+  if (directResult) return directResult;
 
   const matrixRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
   if (!matrixRows.length) {
     throw new Error('Excel 文件没有数据');
   }
 
-  const headerAliases = [
-    '检查项目',
-    '项目名称',
-    '检查结果',
-    '结果',
-    '单位',
-    '参考范围',
-    '日期',
-    'name',
-    'itemName',
-    'result',
-    'value',
-    'unit',
-    'range',
-    'date',
-  ];
-
-  let headerRowIndex = -1;
-  let bestScore = -1;
-  const scanCount = Math.min(matrixRows.length, 10);
-  for (let i = 0; i < scanCount; i++) {
-    const row = matrixRows[i] || [];
-    const asText = row.map((cell) => String(cell || '').trim());
-    const nonEmptyCount = asText.filter((cell) => cell.length > 0).length;
-    const aliasHit = asText.filter((cell) =>
-      headerAliases.some((alias) => cell.toLowerCase().includes(alias.toLowerCase())),
-    ).length;
-    const score = aliasHit * 10 + nonEmptyCount;
-    if (score > bestScore) {
-      bestScore = score;
-      headerRowIndex = i;
+  let aiMap: { dateColumnIndex: number; mappings: Array<{ columnIndex: number; id?: string; name?: string; category?: string }> } | null = null;
+  try {
+    let headerRowIndex = 0;
+    let maxTextCells = -1;
+    for (let i = 0; i < Math.min(matrixRows.length, 20); i++) {
+      const row = matrixRows[i] || [];
+      const textCellCount = row.map((cell) => String(cell ?? '').trim()).filter(Boolean).length;
+      if (textCellCount > maxTextCells) {
+        maxTextCells = textCellCount;
+        headerRowIndex = i;
+      }
     }
-  }
+    const headers = (matrixRows[headerRowIndex] || [])
+      .map((cell, index) => ({ index, text: String(cell ?? '').trim() }))
+      .filter((h) => h.text);
 
-  if (headerRowIndex < 0) {
-    throw new Error('未识别到可用的检查项目列');
-  }
-
-  const headerRow = matrixRows[headerRowIndex] || [];
-  const headers = headerRow.map((cell) => String(cell || '').trim());
-  const recoveredRows = matrixRows
-    .slice(headerRowIndex + 1)
-    .map((row) => {
-      const mapped: Record<string, any> = {};
-      headers.forEach((header, index) => {
-        if (!header) return;
-        mapped[header] = row?.[index] ?? '';
+    if (headers.length > 0) {
+      const resp = await fetch('/api/analyze/excel-header', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ headers }),
       });
-      return mapped;
-    })
-    .filter((row) => Object.keys(row).length > 0);
-
-  const recoveredResult = buildResultFromRows(recoveredRows);
-  if (recoveredResult) {
-    return recoveredResult;
+      if (resp.ok) {
+        const json = await resp.json();
+        aiMap = {
+          dateColumnIndex: Number.isInteger(json?.dateColumnIndex) ? json.dateColumnIndex : -1,
+          mappings: Array.isArray(json?.mappings) ? json.mappings : [],
+        };
+      }
+    }
+  } catch (error) {
+    console.warn('Excel header AI mapping failed, fallback to local parser:', error);
   }
 
-  const wideTableResult = buildResultFromWideTable(matrixRows);
-  if (wideTableResult) {
-    return wideTableResult;
-  }
+  const wideTableResult = buildResultFromWideTable(matrixRows, aiMap);
+  if (wideTableResult) return wideTableResult;
 
   throw new Error('未识别到可用的检查项目数据');
 }
-
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -358,7 +348,7 @@ export default function Home() {
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data);
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const excelResult = parseExcelToOcrResult(file.name, worksheet);
+        const excelResult = await parseExcelToOcrResult(file.name, worksheet);
         const resultData = { type: 'ocr' as const, data: excelResult };
         setResult(resultData);
         saveToHistory('ocr', file.name, excelResult);
@@ -639,3 +629,4 @@ export default function Home() {
     </div>
   );
 }
+

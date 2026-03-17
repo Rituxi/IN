@@ -400,6 +400,23 @@ interface OcrResult {
   items: OcrItem[];
 }
 
+interface ExcelHeaderItem {
+  index: number;
+  text: string;
+}
+
+interface ExcelHeaderMapping {
+  columnIndex: number;
+  id: string;
+  name: string;
+  category: string;
+}
+
+interface ExcelHeaderMapResult {
+  dateColumnIndex: number;
+  mappings: ExcelHeaderMapping[];
+}
+
 const SUMMARY_PROMPT_KEYS: SummaryPromptKey[] = ['slot1'];
 
 const DEFAULT_SUMMARY_PROMPTS: SummaryPrompts = {
@@ -533,6 +550,31 @@ function normalizeOcrResult(payload: unknown): OcrResult {
     notes,
     items,
   };
+}
+
+function normalizeExcelHeaderMap(payload: unknown): ExcelHeaderMapResult {
+  const fallback: ExcelHeaderMapResult = { dateColumnIndex: -1, mappings: [] };
+  if (!payload || typeof payload !== 'object') return fallback;
+  const root = payload as Record<string, unknown>;
+  const dateColumnIndex = Number.isInteger(root.dateColumnIndex) ? Number(root.dateColumnIndex) : -1;
+  const mappings = Array.isArray(root.mappings)
+    ? root.mappings
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const row = item as Record<string, unknown>;
+          const columnIndex = Number(row.columnIndex);
+          if (!Number.isInteger(columnIndex) || columnIndex < 0) return null;
+          return {
+            columnIndex,
+            id: toText(row.id).trim(),
+            name: toText(row.name).trim(),
+            category: toText(row.category).trim(),
+          } satisfies ExcelHeaderMapping;
+        })
+        .filter((item): item is ExcelHeaderMapping => item !== null)
+    : [];
+
+  return { dateColumnIndex, mappings };
 }
 
 function findJsonEnd(text: string, startIndex: number): number {
@@ -1031,6 +1073,69 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     res.json(resultJson);
   } catch (error: any) {
     console.error('OCR Error:', error);
+    res.status(500).json({ error: 'SERVER_ERROR', message: error.message });
+  }
+});
+
+apiRouter.post('/analyze/excel-header', async (req, res) => {
+  try {
+    const { headers } = req.body || {};
+    if (!Array.isArray(headers) || headers.length === 0) {
+      return res.status(400).json({ error: 'INVALID_REQUEST', message: 'Missing headers array' });
+    }
+
+    const safeHeaders: ExcelHeaderItem[] = headers
+      .map((item: unknown, idx: number) => {
+        if (!item || typeof item !== 'object') return null;
+        const row = item as Record<string, unknown>;
+        const index = Number.isInteger(row.index) ? Number(row.index) : idx;
+        const text = toText(row.text).trim();
+        if (!text) return null;
+        return { index, text };
+      })
+      .filter((item): item is ExcelHeaderItem => item !== null);
+
+    if (!safeHeaders.length) {
+      return res.status(400).json({ error: 'INVALID_REQUEST', message: 'No valid header items' });
+    }
+
+    const prompt = `
+You are given one Excel header row for a medical report table.
+Header list:
+${JSON.stringify(safeHeaders)}
+
+Return ONLY JSON in this format:
+{
+  "dateColumnIndex": number,
+  "mappings": [
+    { "columnIndex": number, "id": "string", "name": "string", "category": "string" }
+  ]
+}
+
+Rules:
+1. dateColumnIndex is the best date/time column index. If not found, return -1.
+2. mappings should include medical indicator columns only, excluding date/time columns.
+3. Keep name as close as possible to original header text.
+4. id should be lowercase letters/numbers/underscore (e.g. creatinine, egfr, protein_24h).
+5. Output JSON only, no markdown.
+`.trim();
+
+    const configs = await getLevelConfigs();
+    const modelToUse = configs.care?.ocrModel || SUPPORTED_MODELS[0];
+
+    const response = await ai.models.generateContent({
+      model: modelToUse,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = safeJsonParse(response.text || '{}');
+    const normalized = normalizeExcelHeaderMap(parsed);
+    res.json(normalized);
+  } catch (error: any) {
+    console.error('Excel Header Analyze Error:', error);
     res.status(500).json({ error: 'SERVER_ERROR', message: error.message });
   }
 });
