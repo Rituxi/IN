@@ -23,6 +23,25 @@ interface RedisClient {
   eval(script: string, keys: string[], args: (string | number)[]): Promise<number>;
 }
 
+type UserLevel = 'care' | 'care_plus' | 'king';
+
+interface UserRecord {
+  userId: string;
+  level: UserLevel;
+  ocrUsed: number;
+  ocrLimit: number;
+  summaryUsed: number;
+  summaryLimit: number;
+  extraQuota: number;
+  totalUsedCount: number;
+  isUnlimited: boolean;
+  isPro: boolean;
+  firstUsedAt: string;
+  note: string;
+  status: string;
+  group: string;
+}
+
 class IORedisAdapter implements RedisClient {
   private client: Redis;
 
@@ -207,38 +226,29 @@ const IP_API_CONFIG = {
   providers: [
     {
       name: 'ip-api',
-      url: (ip: string) => `https://ip-api.com/json/${ip}?lang=zh-CN`,
+      url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
       parse: (data: any) => {
-        if (data.status === 'success' && data.country === '中国') {
+        if (data.status === 'success') {
+          const country = data.country || '';
           const province = data.regionName || '';
           const city = data.city || '';
-          if (province && city) return `${province} ${city}`;
-          if (province) return province;
-        }
-        return null;
-      }
-    },
-    {
-      name: 'ipapi',
-      url: (ip: string) => `https://ipapi.co/${ip}/json/`,
-      parse: (data: any) => {
-        if (data.country === 'CN' && !data.error) {
-          const province = data.region || '';
-          const city = data.city || '';
-          if (province && city) return `${province} ${city}`;
-          if (province) return province;
+          return [country, province, city].filter(Boolean).join(' ') || null;
         }
         return null;
       }
     }
   ].filter(p => {
-    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api,ipapi').split(',').map(s => s.trim());
+    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api').split(',').map(s => s.trim());
     return enabledProviders.includes(p.name);
   }),
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
   maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
   rateLimitPerMinute: parseInt(process.env.IP_API_RATE_LIMIT || '40', 10)
 };
+
+const USER_GROUPS_KEY = 'admin:user-groups';
+const DEFAULT_USER_GROUP = '\u672a\u5206\u7ec4';
+const ipLocationCache = new Map<string, string>();
 
 async function checkIpApiRateLimit(): Promise<boolean> {
   const key = 'rate_limit:ip_api';
@@ -602,13 +612,17 @@ const checkAdmin = (req: any, res: any, next: any) => {
 async function getUser(userId: string) {
   const userStr = await redis.get(`user:${userId}`);
   if (userStr) {
-    return typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
+    const parsed = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
+    return {
+      ...parsed,
+      group: typeof parsed.group === 'string' && parsed.group.trim() ? parsed.group.trim() : DEFAULT_USER_GROUP,
+    } as UserRecord;
   }
   
   const configs = await getLevelConfigs();
   const defaultConfig = configs.care;
   
-  const newUser = {
+  const newUser: UserRecord = {
     userId,
     level: 'care',
     ocrUsed: 0,
@@ -622,6 +636,7 @@ async function getUser(userId: string) {
     firstUsedAt: new Date().toISOString(),
     note: '',
     status: 'active',
+    group: DEFAULT_USER_GROUP,
   };
   await redis.set(`user:${userId}`, JSON.stringify(newUser));
   return newUser;
@@ -629,7 +644,11 @@ async function getUser(userId: string) {
 
 async function updateUser(userId: string, data: any) {
   const user = await getUser(userId);
-  const updated = { ...user, ...data };
+  const updated: UserRecord = {
+    ...user,
+    ...data,
+    group: typeof data.group === 'string' && data.group.trim() ? data.group.trim() : user.group || DEFAULT_USER_GROUP,
+  };
   
   if (data.level) {
     const configs = await getLevelConfigs();
@@ -641,6 +660,10 @@ async function updateUser(userId: string, data: any) {
     updated.summaryLimit = config.summaryLimit;
     updated.isUnlimited = data.level === 'king';
     updated.isPro = data.level === 'king' || data.level === 'care_plus';
+  }
+
+  if (!updated.group) {
+    updated.group = DEFAULT_USER_GROUP;
   }
   
   await redis.set(`user:${userId}`, JSON.stringify(updated));
@@ -661,14 +684,47 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+function normalizeIp(ip: string): string {
+  return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+}
+
+function extractClientIp(req: any): string {
+  const forwardedFor = req.headers['x-forwarded-for'];
+  const realIp = req.headers['x-real-ip'];
+  const candidates = [
+    ...(Array.isArray(forwardedFor) ? forwardedFor.flatMap((item) => item.split(',')) : typeof forwardedFor === 'string' ? forwardedFor.split(',') : []),
+    ...(Array.isArray(realIp) ? realIp : typeof realIp === 'string' ? [realIp] : []),
+    req.socket?.remoteAddress,
+  ];
+
+  for (const candidate of candidates) {
+    const ip = normalizeIp(String(candidate || '').trim());
+    if (!ip) continue;
+    if (!isPrivateIp(ip)) {
+      return ip;
+    }
+  }
+
+  for (const candidate of candidates) {
+    const ip = normalizeIp(String(candidate || '').trim());
+    if (ip) return ip;
+  }
+
+  return 'unknown';
+}
+
 async function getIpLocation(ip: string): Promise<string> {
   if (isPrivateIp(ip)) {
-    return '本地网络';
+    return '\u672c\u5730\u7f51\u7edc';
+  }
+
+  if (ipLocationCache.has(ip)) {
+    return ipLocationCache.get(ip)!;
   }
   
   if (!(await checkIpApiRateLimit())) {
     console.warn('IP API rate limit exceeded, skipping location lookup');
-    return '未知';
+    return '\u672a\u77e5';
   }
   
   const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
@@ -691,6 +747,13 @@ async function getIpLocation(ip: string): Promise<string> {
         const data = await response.json();
         const location = provider.parse(data);
         if (location) {
+          if (ipLocationCache.size >= 100) {
+            const firstKey = ipLocationCache.keys().next().value;
+            if (firstKey) {
+              ipLocationCache.delete(firstKey);
+            }
+          }
+          ipLocationCache.set(ip, location);
           return location;
         }
         break;
@@ -703,7 +766,7 @@ async function getIpLocation(ip: string): Promise<string> {
     }
   }
   
-  return '未知';
+  return '\u672a\u77e5';
 }
 
 async function logUsage(userId: string, ip: string, feature: string, monthlyUsedCount: number, totalUsedCount: number) {
@@ -730,6 +793,48 @@ async function logUsage(userId: string, ip: string, feature: string, monthlyUsed
   await redis.incr(`stats:dailyCalls:${today}`);
   const month = today.substring(0, 7);
   await redis.incr(`stats:monthlyCalls:${month}`);
+}
+
+function normalizeGroupName(value: unknown): string {
+  const group = toText(value).trim().slice(0, 30);
+  return group || DEFAULT_USER_GROUP;
+}
+
+async function getUserGroups(): Promise<string[]> {
+  try {
+    const saved = await redis.get(USER_GROUPS_KEY);
+    if (!saved) {
+      const defaults = [DEFAULT_USER_GROUP];
+      await redis.set(USER_GROUPS_KEY, JSON.stringify(defaults));
+      return defaults;
+    }
+    const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
+    const groups = Array.isArray(parsed)
+      ? parsed.map((item) => normalizeGroupName(item))
+      : [DEFAULT_USER_GROUP];
+    return Array.from(new Set([DEFAULT_USER_GROUP, ...groups]));
+  } catch (error) {
+    console.error('Failed to load user groups:', error);
+    return [DEFAULT_USER_GROUP];
+  }
+}
+
+async function saveUserGroups(groups: string[]): Promise<string[]> {
+  const normalized = Array.from(new Set(groups.map((item) => normalizeGroupName(item))));
+  if (!normalized.includes(DEFAULT_USER_GROUP)) {
+    normalized.unshift(DEFAULT_USER_GROUP);
+  }
+  await redis.set(USER_GROUPS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+async function ensureUserGroupExists(groupName: string): Promise<string[]> {
+  const normalized = normalizeGroupName(groupName);
+  const groups = await getUserGroups();
+  if (groups.includes(normalized)) {
+    return groups;
+  }
+  return saveUserGroups([...groups, normalized]);
 }
 
 // --- API Routes ---
@@ -843,8 +948,8 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
 
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-    await logUsage(effectiveUserId, ip as string, 'ocr', user.ocrUsed, user.totalUsedCount);
+    const ip = extractClientIp(req);
+    await logUsage(effectiveUserId, ip, 'ocr', user.ocrUsed, user.totalUsedCount);
 
     res.json(resultJson);
   } catch (error: any) {
@@ -900,8 +1005,8 @@ apiRouter.post('/summary/text', async (req, res) => {
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
 
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-    await logUsage(effectiveUserId, ip as string, 'summary', user.summaryUsed, user.totalUsedCount);
+    const ip = extractClientIp(req);
+    await logUsage(effectiveUserId, ip, 'summary', user.summaryUsed, user.totalUsedCount);
 
     res.json({
       success: true,
@@ -1051,14 +1156,21 @@ apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
 apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
   try {
     let cursor = '0';
-    let users = [];
+    let users: UserRecord[] = [];
     do {
       const [nextCursor, keys] = await redis.scan(cursor, { match: 'user:*', count: 100 });
       cursor = nextCursor;
       if (keys.length > 0) {
         const userStrs = await redis.mget(...keys);
-        const allUsers = userStrs.filter(Boolean).map(u => typeof u === 'string' ? JSON.parse(u) : u);
-        users.push(...allUsers.filter((u: any) => u?.userId && !u.userId.startsWith('web_')));
+        const allUsers = userStrs
+          .filter(Boolean)
+          .map(u => typeof u === 'string' ? JSON.parse(u) : u)
+          .filter((u: any) => u?.userId && !u.userId.startsWith('web_'))
+          .map((u: any) => ({
+            ...u,
+            group: typeof u.group === 'string' && u.group.trim() ? u.group.trim() : DEFAULT_USER_GROUP,
+          }));
+        users.push(...allUsers);
       }
     } while (cursor !== '0');
     
@@ -1071,9 +1183,31 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
 apiRouter.post('/admin/users/:userId', checkAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
-    const data = req.body;
+    const data = req.body || {};
+    if (typeof data.group === 'string' && data.group.trim()) {
+      await ensureUserGroupExists(data.group);
+    }
     const updated = await updateUser(userId, data);
     res.json(updated);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.get('/admin/user-groups', checkAdmin, async (req, res) => {
+  try {
+    const groups = await getUserGroups();
+    res.json({ groups });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post('/admin/user-groups', checkAdmin, async (req, res) => {
+  try {
+    const group = normalizeGroupName(req.body?.group);
+    const groups = await ensureUserGroupExists(group);
+    res.json({ success: true, groups, group });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Upload,
-  FileText,
-  Image as ImageIcon,
-  Loader2,
+  Check,
   Copy,
   Download,
+  FileText,
   History,
+  Image as ImageIcon,
+  Loader2,
   Trash2,
-  Check,
+  Upload,
   X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -39,7 +39,7 @@ interface MedicalRecord {
 
 function formatToMedicalRecords(data: any): { medicalRecords: MedicalRecord[] } {
   const record: MedicalRecord = {
-    title: data.title || 'Medical Report',
+    title: data.title || '检查报告',
     date: data.date || new Date().toISOString().split('T')[0],
     hospital: data.hospital || '',
     doctor: data.doctor || '',
@@ -77,25 +77,25 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
 
     const firstRow = rows[0] || {};
     const date =
-      pickField(firstRow, ['\u65e5\u671f', '\u68c0\u67e5\u65e5\u671f', '\u62a5\u544a\u65e5\u671f', 'date', 'Date']) ||
+      pickField(firstRow, ['日期', '检查日期', '报告日期', 'date', 'Date']) ||
       new Date().toISOString().split('T')[0];
-    const hospital = pickField(firstRow, ['\u533b\u9662', '\u533b\u9662\u540d\u79f0', 'hospital', 'Hospital']);
-    const doctor = pickField(firstRow, ['\u533b\u751f', '\u533b\u5e08', 'doctor', 'Doctor']);
-    const notes = pickField(firstRow, ['\u5907\u6ce8', '\u8bf4\u660e', 'notes', 'Notes']);
+    const hospital = pickField(firstRow, ['医院', '医院名称', 'hospital', 'Hospital']);
+    const doctor = pickField(firstRow, ['医生', '医师', 'doctor', 'Doctor']);
+    const notes = pickField(firstRow, ['备注', '说明', 'notes', 'Notes']);
 
     const items = rows
       .map((row) => ({
-        name: pickField(row, ['\u68c0\u67e5\u9879\u76ee', '\u9879\u76ee\u540d\u79f0', '\u6307\u6807', 'name', 'itemName', 'Name']),
-        value: pickField(row, ['\u68c0\u67e5\u7ed3\u679c', '\u7ed3\u679c', '\u6570\u503c', 'value', 'result', 'Result']),
-        unit: pickField(row, ['\u5355\u4f4d', 'unit', 'Unit']),
-        range: pickField(row, ['\u53c2\u8003\u8303\u56f4', '\u53c2\u8003\u503c', '\u6b63\u5e38\u8303\u56f4', 'range', 'referenceRange', 'Range']),
+        name: pickField(row, ['检查项目', '项目名称', '指标', 'name', 'itemName', 'Name']),
+        value: pickField(row, ['检查结果', '结果', '数值', 'value', 'result', 'Result']),
+        unit: pickField(row, ['单位', 'unit', 'Unit']),
+        range: pickField(row, ['参考范围', '参考值', '正常范围', 'range', 'referenceRange', 'Range']),
       }))
       .filter((item) => item.name || item.value || item.unit || item.range);
 
     if (!items.length) return null;
 
     return {
-      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel Report',
+      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
       date,
       hospital,
       doctor,
@@ -112,17 +112,17 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
 
   const matrixRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
   if (!matrixRows.length) {
-    throw new Error('Excel has no data');
+    throw new Error('Excel 文件没有数据');
   }
 
   const headerAliases = [
-    '\u68c0\u67e5\u9879\u76ee',
-    '\u9879\u76ee\u540d\u79f0',
-    '\u68c0\u67e5\u7ed3\u679c',
-    '\u7ed3\u679c',
-    '\u5355\u4f4d',
-    '\u53c2\u8003\u8303\u56f4',
-    '\u65e5\u671f',
+    '检查项目',
+    '项目名称',
+    '检查结果',
+    '结果',
+    '单位',
+    '参考范围',
+    '日期',
     'name',
     'itemName',
     'result',
@@ -150,7 +150,7 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
   }
 
   if (headerRowIndex < 0) {
-    throw new Error('No recognizable test items found in Excel');
+    throw new Error('未识别到可用的检查项目列');
   }
 
   const headerRow = matrixRows[headerRowIndex] || [];
@@ -172,7 +172,7 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
     return recoveredResult;
   }
 
-  throw new Error('No recognizable test items found in Excel');
+  throw new Error('未识别到可用的检查项目数据');
 }
 
 export default function Home() {
@@ -196,8 +196,8 @@ export default function Home() {
     if (stored) {
       try {
         setHistory(JSON.parse(stored));
-      } catch (e) {
-        console.error('Failed to parse history:', e);
+      } catch (event) {
+        console.error('解析历史记录失败:', event);
       }
     }
   }, []);
@@ -216,7 +216,7 @@ export default function Home() {
   };
 
   const deleteHistoryItem = (id: string) => {
-    const updated = history.filter((h) => h.id !== id);
+    const updated = history.filter((item) => item.id !== id);
     setHistory(updated);
     localStorage.setItem('ocrHistory', JSON.stringify(updated));
   };
@@ -226,9 +226,9 @@ export default function Home() {
     localStorage.removeItem('ocrHistory');
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      setFile(event.target.files[0]);
       setResult(null);
       setError('');
     }
@@ -252,26 +252,26 @@ export default function Home() {
       } else {
         const base64 = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
-          reader.onload = (event) => resolve((event.target?.result as string) || '');
-          reader.onerror = () => reject(new Error('Failed to read image file'));
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = () => reject(new Error('读取图片失败'));
           reader.readAsDataURL(file);
         });
 
         const res = await fetch('/api/analyze/image-base64', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ base64, mimeType: file.type, userId, nickname: 'Web User' }),
+          body: JSON.stringify({ base64, mimeType: file.type, userId, nickname: '网页用户' }),
         });
         const json = await res.json();
         if (!res.ok || json.error) {
-          throw new Error(json.message || 'Error processing image');
+          throw new Error(json.message || '图片识别失败');
         }
         const resultData = { type: 'ocr' as const, data: json };
         setResult(resultData);
         saveToHistory('ocr', file.name, json);
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (event: any) {
+      setError(event.message);
     } finally {
       setLoading(false);
     }
@@ -284,8 +284,8 @@ export default function Home() {
       await navigator.clipboard.writeText(JSON.stringify(content, null, 2));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
+    } catch (event) {
+      console.error('复制失败:', event);
     }
   };
 
@@ -298,7 +298,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `medical_records_${new Date().toISOString().split('T')[0]}.json`;
+    link.download = `检查记录_${new Date().toISOString().split('T')[0]}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -309,48 +309,46 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-6">
-      <div className="max-w-3xl mx-auto space-y-8">
-        <header className="text-center space-y-4 pt-12">
-          <h1 className="text-4xl font-semibold tracking-tight">Report Recognition</h1>
-          <p className="text-slate-500 text-lg">
-            Upload medical images or Excel files and get structured JSON output.
-          </p>
+    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-900">
+      <div className="mx-auto max-w-3xl space-y-8">
+        <header className="space-y-4 pt-12 text-center">
+          <h1 className="text-4xl font-semibold tracking-tight">指标笔记·Inno 检查单识别</h1>
+          <p className="text-lg text-slate-500">上传医疗检查图片或 Excel，快速得到结构化 JSON 结果。</p>
         </header>
 
-        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-8">
-          <div className="flex justify-end mb-4">
+        <div className="rounded-3xl border border-slate-100 bg-white p-8 shadow-sm">
+          <div className="mb-4 flex justify-end">
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className="flex items-center space-x-2 px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              className="flex items-center space-x-2 rounded-xl px-4 py-2 text-slate-600 transition-colors hover:bg-slate-100"
             >
               <History size={18} />
-              <span>History ({history.length})</span>
+              <span>历史记录 ({history.length})</span>
             </button>
           </div>
 
           {showHistory && (
-            <div className="mb-6 p-4 bg-slate-50 rounded-2xl border border-slate-200 max-h-80 overflow-y-auto">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="font-medium text-slate-700">Recent Results</h3>
+            <div className="mb-6 max-h-80 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="font-medium text-slate-700">最近识别结果</h3>
                 {history.length > 0 && (
                   <button
                     onClick={clearHistory}
-                    className="text-xs text-red-500 hover:text-red-600 flex items-center space-x-1"
+                    className="flex items-center space-x-1 text-xs text-red-500 hover:text-red-600"
                   >
                     <Trash2 size={14} />
-                    <span>Clear</span>
+                    <span>清空</span>
                   </button>
                 )}
               </div>
               {history.length === 0 ? (
-                <p className="text-sm text-slate-400 text-center py-4">No history yet.</p>
+                <p className="py-4 text-center text-sm text-slate-400">暂无历史记录</p>
               ) : (
                 <div className="space-y-2">
                   {history.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 hover:border-slate-200 transition-colors"
+                      className="flex items-center justify-between rounded-xl border border-slate-100 bg-white p-3 transition-colors hover:border-slate-200"
                     >
                       <button onClick={() => loadFromHistory(item)} className="flex-1 text-left">
                         <div className="flex items-center space-x-2">
@@ -359,13 +357,13 @@ export default function Home() {
                           ) : (
                             <FileText size={16} className="text-emerald-500" />
                           )}
-                          <span className="font-medium text-sm truncate max-w-[200px]">{item.fileName}</span>
+                          <span className="max-w-[200px] truncate text-sm font-medium">{item.fileName}</span>
                         </div>
-                        <p className="text-xs text-slate-400 mt-1">{new Date(item.timestamp).toLocaleString('zh-CN')}</p>
+                        <p className="mt-1 text-xs text-slate-400">{new Date(item.timestamp).toLocaleString('zh-CN')}</p>
                       </button>
                       <button
                         onClick={() => deleteHistoryItem(item.id)}
-                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
                       >
                         <X size={16} />
                       </button>
@@ -376,71 +374,63 @@ export default function Home() {
             </div>
           )}
 
-          <div className="border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center hover:bg-slate-50 transition-colors cursor-pointer relative">
+          <div className="relative cursor-pointer rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center transition-colors hover:bg-slate-50">
             <input
               type="file"
               accept="image/*,.xlsx,.xls"
               onChange={handleFileChange}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
             <div className="flex flex-col items-center space-y-4">
-              <div className="p-4 bg-indigo-50 text-indigo-600 rounded-full">
+              <div className="rounded-full bg-indigo-50 p-4 text-indigo-600">
                 <Upload size={32} />
               </div>
               <div>
-                <p className="font-medium text-lg">Drop file here or click to upload</p>
-                <p className="text-slate-500 text-sm mt-1">Supports JPG, PNG, Excel</p>
+                <p className="text-lg font-medium">将文件拖到这里，或点击上传</p>
+                <p className="mt-1 text-sm text-slate-500">支持 JPG、PNG、Excel</p>
               </div>
             </div>
           </div>
 
           {file && (
-            <div className="mt-6 flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
+            <div className="mt-6 flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-4">
               <div className="flex items-center space-x-3">
-                {isExcelFile(file) ? (
-                  <FileText className="text-emerald-500" />
-                ) : (
-                  <ImageIcon className="text-blue-500" />
-                )}
-                <span className="font-medium truncate max-w-xs">{file.name}</span>
+                {isExcelFile(file) ? <FileText className="text-emerald-500" /> : <ImageIcon className="text-blue-500" />}
+                <span className="max-w-xs truncate font-medium">{file.name}</span>
               </div>
               <button
                 onClick={handleUpload}
                 disabled={loading}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-full font-medium transition-colors disabled:opacity-50 flex items-center space-x-2"
+                className="flex items-center space-x-2 rounded-full bg-indigo-600 px-6 py-2 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
               >
                 {loading && <Loader2 size={18} className="animate-spin" />}
-                <span>{loading ? 'Processing...' : 'Start Recognition'}</span>
+                <span>{loading ? '识别中...' : '开始识别'}</span>
               </button>
             </div>
           )}
 
-          {error && (
-            <div className="mt-6 p-4 bg-red-50 text-red-600 rounded-xl border border-red-100">
-              {error}
-            </div>
-          )}
+          {error && <div className="mt-6 rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">{error}</div>}
         </div>
 
         {result && (
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 space-y-6 animate-in fade-in slide-in-from-bottom-4">
+          <div className="animate-in slide-in-from-bottom-4 space-y-6 rounded-3xl border border-slate-100 bg-white p-8 shadow-sm fade-in">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-semibold">Recognition Result</h2>
+              <h2 className="text-2xl font-semibold">识别结果</h2>
               <div className="flex items-center space-x-2">
                 <button
                   onClick={copyToClipboard}
-                  className="flex items-center space-x-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-colors text-sm font-medium"
+                  className="flex items-center space-x-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200"
                 >
                   {copied ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
-                  <span>{copied ? 'Copied' : 'Copy JSON'}</span>
+                  <span>{copied ? '已复制' : '复制 JSON'}</span>
                 </button>
                 {result.type === 'ocr' && (
                   <button
                     onClick={exportJSON}
-                    className="flex items-center space-x-2 px-4 py-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-xl transition-colors text-sm font-medium"
+                    className="flex items-center space-x-2 rounded-xl bg-indigo-100 px-4 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-200"
                   >
                     <Download size={16} />
-                    <span>Export JSON</span>
+                    <span>导出 JSON</span>
                   </button>
                 )}
               </div>
@@ -450,36 +440,36 @@ export default function Home() {
               <div className="space-y-6">
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
-                    <span className="text-slate-500">Title: </span>
+                    <span className="text-slate-500">标题：</span>
                     <span className="font-medium">{result.data.title}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500">Date: </span>
+                    <span className="text-slate-500">日期：</span>
                     <span className="font-medium">{result.data.date}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500">Hospital: </span>
+                    <span className="text-slate-500">医院：</span>
                     <span className="font-medium">{result.data.hospital}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500">Doctor: </span>
+                    <span className="text-slate-500">医生：</span>
                     <span className="font-medium">{result.data.doctor}</span>
                   </div>
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full border-collapse text-left">
                     <thead>
-                      <tr className="border-b border-slate-200 text-slate-500 text-sm">
-                        <th className="py-3 font-medium">Item</th>
-                        <th className="py-3 font-medium">Value</th>
-                        <th className="py-3 font-medium">Reference Range</th>
-                        <th className="py-3 font-medium">Unit</th>
+                      <tr className="border-b border-slate-200 text-sm text-slate-500">
+                        <th className="py-3 font-medium">项目</th>
+                        <th className="py-3 font-medium">结果</th>
+                        <th className="py-3 font-medium">参考范围</th>
+                        <th className="py-3 font-medium">单位</th>
                       </tr>
                     </thead>
                     <tbody className="text-sm">
-                      {result.data.items?.map((item: any, i: number) => (
-                        <tr key={i} className="border-b border-slate-100 last:border-0">
+                      {result.data.items?.map((item: any, index: number) => (
+                        <tr key={index} className="border-b border-slate-100 last:border-0">
                           <td className="py-3 font-medium">{item.name}</td>
                           <td className="py-3">{item.value}</td>
                           <td className="py-3 text-slate-500">{item.range}</td>
@@ -491,8 +481,8 @@ export default function Home() {
                 </div>
 
                 {result.data.notes && (
-                  <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm">
-                    <span className="font-semibold">Notes: </span>
+                  <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
+                    <span className="font-semibold">备注：</span>
                     {result.data.notes}
                   </div>
                 )}
@@ -501,12 +491,8 @@ export default function Home() {
 
             {result.type === 'summary' && (
               <div className="space-y-4">
-                <div className="p-6 bg-indigo-50 text-indigo-900 rounded-2xl leading-relaxed">
-                  {result.data.summary}
-                </div>
-                <div className="text-sm text-slate-500 text-right">
-                  Remaining quota: {result.data.quota?.remaining}
-                </div>
+                <div className="rounded-2xl bg-indigo-50 p-6 leading-relaxed text-indigo-900">{result.data.summary}</div>
+                <div className="text-right text-sm text-slate-500">剩余额度：{result.data.quota?.remaining}</div>
               </div>
             )}
           </div>
