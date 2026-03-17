@@ -17,8 +17,10 @@ interface RedisClient {
   lpush(key: string, value: string): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
   ltrim(key: string, start: number, stop: number): Promise<void>;
+  lrem(key: string, count: number, value: string): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
   scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]>;
+  eval(script: string, keys: string[], args: (string | number)[]): Promise<number>;
 }
 
 class IORedisAdapter implements RedisClient {
@@ -59,6 +61,11 @@ class IORedisAdapter implements RedisClient {
     await this.client.ltrim(key, start, stop);
   }
 
+  async lrem(key: string, count: number, value: string): Promise<number> {
+    const result = await this.client.lrem(key, count, value);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return this.client.mget(...keys);
   }
@@ -66,6 +73,11 @@ class IORedisAdapter implements RedisClient {
   async scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]> {
     const result = await this.client.scan(parseInt(cursor), 'MATCH', options?.match || '*', 'COUNT', options?.count || 100);
     return result;
+  }
+
+  async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
+    const result = await this.client.eval(script, keys.length, ...keys, ...args);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
   }
 }
 
@@ -109,6 +121,11 @@ class UpstashRedisAdapter implements RedisClient {
     await this.client.ltrim(key, start, stop);
   }
 
+  async lrem(key: string, count: number, value: string): Promise<number> {
+    const result = await this.client.lrem(key, count, value);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
   async mget(...keys: string[]): Promise<(string | null)[]> {
     const result = await this.client.mget(...keys);
     return result.map(r => {
@@ -120,6 +137,11 @@ class UpstashRedisAdapter implements RedisClient {
   async scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]> {
     const result = await this.client.scan(cursor, options);
     return [result[0], result[1]];
+  }
+
+  async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
+    const result = await this.client.eval(script, keys, args.map(String));
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
   }
 }
 
@@ -169,8 +191,10 @@ const redis: RedisClient = {
   lpush: (key: string, value: string) => getRedisClient().lpush(key, value),
   lrange: (key: string, start: number, stop: number) => getRedisClient().lrange(key, start, stop),
   ltrim: (key: string, start: number, stop: number) => getRedisClient().ltrim(key, start, stop),
+  lrem: (key: string, count: number, value: string) => getRedisClient().lrem(key, count, value),
   mget: (...keys: string[]) => getRedisClient().mget(...keys),
   scan: (cursor: string, options?: { match?: string; count?: number }) => getRedisClient().scan(cursor, options),
+  eval: (script: string, keys: string[], args: (string | number)[]) => getRedisClient().eval(script, keys, args),
 };
 
 // Initialize Gemini API
@@ -178,6 +202,62 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 // Constants
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+
+const IP_API_CONFIG = {
+  providers: [
+    {
+      name: 'ip-api',
+      url: (ip: string) => `https://ip-api.com/json/${ip}?lang=zh-CN`,
+      parse: (data: any) => {
+        if (data.status === 'success' && data.country === '中国') {
+          const province = data.regionName || '';
+          const city = data.city || '';
+          if (province && city) return `${province} ${city}`;
+          if (province) return province;
+        }
+        return null;
+      }
+    },
+    {
+      name: 'ipapi',
+      url: (ip: string) => `https://ipapi.co/${ip}/json/`,
+      parse: (data: any) => {
+        if (data.country === 'CN' && !data.error) {
+          const province = data.region || '';
+          const city = data.city || '';
+          if (province && city) return `${province} ${city}`;
+          if (province) return province;
+        }
+        return null;
+      }
+    }
+  ].filter(p => {
+    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api,ipapi').split(',').map(s => s.trim());
+    return enabledProviders.includes(p.name);
+  }),
+  timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
+  maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
+  rateLimitPerMinute: parseInt(process.env.IP_API_RATE_LIMIT || '40', 10)
+};
+
+async function checkIpApiRateLimit(): Promise<boolean> {
+  const key = 'rate_limit:ip_api';
+  const limit = IP_API_CONFIG.rateLimitPerMinute;
+  const luaScript = `
+    local current = redis.call('GET', KEYS[1])
+    if current and tonumber(current) >= tonumber(ARGV[1]) then
+      return 0
+    else
+      local newCount = redis.call('INCR', KEYS[1])
+      if newCount == 1 then
+        redis.call('EXPIRE', KEYS[1], 60)
+      end
+      return 1
+    end
+  `;
+  const result = await redis.eval(luaScript, [key], [limit]);
+  return result === 1;
+}
 
 // Level Configuration
 interface LevelConfig {
@@ -293,20 +373,81 @@ async function updateUser(userId: string, data: any) {
   return updated;
 }
 
+function isPrivateIp(ip: string): boolean {
+  if (!ip || ip === 'unknown') return true;
+  
+  const privateIpRegex = /^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|127\.|::1$|localhost$)/i;
+  if (privateIpRegex.test(ip)) return true;
+  
+  if (ip.startsWith('::ffff:')) {
+    const ipv4 = ip.substring(7);
+    return privateIpRegex.test(ipv4);
+  }
+  
+  return false;
+}
+
+async function getIpLocation(ip: string): Promise<string> {
+  if (isPrivateIp(ip)) {
+    return '本地网络';
+  }
+  
+  if (!(await checkIpApiRateLimit())) {
+    console.warn('IP API rate limit exceeded, skipping location lookup');
+    return '未知';
+  }
+  
+  const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  for (const provider of IP_API_CONFIG.providers) {
+    for (let attempt = 0; attempt < IP_API_CONFIG.maxRetries; attempt++) {
+      try {
+        const response = await fetchWithTimeout(provider.url(ip), IP_API_CONFIG.timeoutMs);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        const location = provider.parse(data);
+        if (location) {
+          return location;
+        }
+        break;
+      } catch (error: any) {
+        console.error(`IP location lookup failed (${provider.name}, attempt ${attempt + 1}/${IP_API_CONFIG.maxRetries}):`, error.message);
+        if (attempt < IP_API_CONFIG.maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    }
+  }
+  
+  return '未知';
+}
+
 async function logUsage(userId: string, ip: string, feature: string, monthlyUsedCount: number, totalUsedCount: number) {
+  const ipLocation = await getIpLocation(ip);
   const log = {
     id: `log_${uuidv4()}`,
     userId,
     ip,
-    ipLocation: 'Unknown', // In a real app, use an IP geolocation service
+    ipLocation,
     feature,
     monthlyUsedCount,
     totalUsedCount,
     usedAt: new Date().toISOString(),
     status: 'success',
   };
-  await redis.lpush('usage_logs', JSON.stringify(log));
-  // Keep only last 1000 logs for simplicity
+  const logStr = JSON.stringify(log);
+  await redis.lpush('usage_logs', logStr);
+  await redis.set(`log_index:${log.id}`, logStr);
   await redis.ltrim('usage_logs', 0, 999);
   
   // Update global stats
@@ -361,11 +502,19 @@ Output Rules:
   ]
 }
 
+CRITICAL INSTRUCTIONS FOR ITEMS EXTRACTION:
+- You MUST extract ALL test items/indicators from the image
+- Each row in a medical report table represents ONE item
+- Look for columns like: 检查项目/项目名称, 结果/检测值, 单位, 参考范围/正常值
+- Common medical indicators include: 尿蛋白, 肌酐, 尿素氮, 白蛋白, 血红蛋白, etc.
+- If you see a table with multiple test items, extract EACH ONE as a separate item
+- Do NOT leave the items array empty if there is data in the image
+
 IMPORTANT:
 - date MUST be a STRING in format "YYYY-MM-DD" (e.g. "2025-12-15"), NOT a timestamp number
 - items array should only contain: name, value, unit, range
 - Do NOT add fields like "id", "categoryName", "configName"
-- Extract ALL test items from the image`;
+- If the image is unclear or no medical data is found, still return the structure with empty items array`;
 
     const response = await ai.models.generateContent({
       model: modelToUse,
@@ -379,7 +528,7 @@ IMPORTANT:
               },
             },
             {
-              text: 'Extract medical data.',
+              text: 'Carefully examine this medical report image. Extract ALL test items/indicators from any tables or lists. Each test item should have: name (检查项目名称), value (检测结果数值), unit (单位), range (参考范围). Return as JSON.',
             },
           ],
         },
@@ -588,6 +737,23 @@ apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
     const logsStr = await redis.lrange('usage_logs', 0, 99);
     const logs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
     res.json(logs);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
+  try {
+    const { logId } = req.params;
+    
+    const logStr = await redis.get(`log_index:${logId}`);
+    if (logStr) {
+      await redis.lrem('usage_logs', 1, logStr);
+      await redis.del(`log_index:${logId}`);
+      res.json({ success: true, deleted: true });
+    } else {
+      res.json({ success: true, deleted: false });
+    }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
