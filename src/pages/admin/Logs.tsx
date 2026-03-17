@@ -111,7 +111,7 @@ export default function Logs() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-3xl font-semibold tracking-tight text-slate-900">使用记录</h2>
-          <p className="mt-2 text-slate-500">数据概览和接口调用明细已经合并到这个页面。</p>
+          <p className="mt-2 text-slate-500">本页集中展示整体数据与接口调用记录，方便统一查看。</p>
         </div>
         <button
           onClick={fetchLogsAndStats}

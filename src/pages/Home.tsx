@@ -104,6 +104,82 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
     };
   };
 
+  // 兜底支持“宽表”格式：第一行是项目名，第一列是日期，每一行是一组检查结果
+  const buildResultFromWideTable = (matrix: any[][]): any | null => {
+    if (!matrix.length) return null;
+
+    const toText = (value: any) => String(value ?? '').trim();
+    const isNumericLike = (value: string) => /^[-+]?\d+(\.\d+)?([↑↓]|\[[^\]]+\])?$/u.test(value);
+
+    let headerRowIndex = -1;
+    let bestHeaderScore = -1;
+    const scanCount = Math.min(matrix.length, 10);
+    for (let i = 0; i < scanCount; i++) {
+      const cells = (matrix[i] || []).map(toText);
+      const nonEmpty = cells.filter((cell) => cell.length > 0);
+      if (nonEmpty.length < 3) continue;
+
+      const numericLikeCount = nonEmpty.filter((cell) => isNumericLike(cell)).length;
+      const textLikeCount = nonEmpty.length - numericLikeCount;
+      const score = nonEmpty.length * 2 + textLikeCount - numericLikeCount * 2;
+      if (score > bestHeaderScore) {
+        bestHeaderScore = score;
+        headerRowIndex = i;
+      }
+    }
+
+    if (headerRowIndex < 0) return null;
+
+    const headers = (matrix[headerRowIndex] || []).map(toText);
+    if (headers.filter((header) => header).length < 3) return null;
+
+    let dateColIndex = headers.findIndex((header) => /日期|时间|date|day/i.test(header));
+    if (dateColIndex < 0) dateColIndex = 0;
+
+    let bestRow: any[] | null = null;
+    let bestValueCount = 0;
+    for (const row of matrix.slice(headerRowIndex + 1)) {
+      const rowCells = row || [];
+      const dateValue = toText(rowCells[dateColIndex]);
+      if (!dateValue) continue;
+
+      let valueCount = 0;
+      for (let i = 0; i < headers.length; i++) {
+        if (i === dateColIndex) continue;
+        const header = headers[i];
+        const value = toText(rowCells[i]);
+        if (header && value) valueCount += 1;
+      }
+
+      if (valueCount > bestValueCount) {
+        bestValueCount = valueCount;
+        bestRow = rowCells;
+      }
+    }
+
+    if (!bestRow || bestValueCount === 0) return null;
+
+    const items = headers
+      .map((header, index) => {
+        if (index === dateColIndex) return null;
+        const name = toText(header);
+        const value = toText(bestRow?.[index]);
+        if (!name || !value) return null;
+        return { name, value, unit: '', range: '' };
+      })
+      .filter((item): item is { name: string; value: string; unit: string; range: string } => !!item);
+
+    if (!items.length) return null;
+
+    return {
+      title: fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告',
+      date: toText(bestRow[dateColIndex]) || new Date().toISOString().split('T')[0],
+      hospital: '',
+      doctor: '',
+      notes: '',
+      items,
+    };
+  };
   const objectRows = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as any[];
   const directResult = buildResultFromRows(objectRows);
   if (directResult) {
@@ -170,6 +246,11 @@ function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet): any
   const recoveredResult = buildResultFromRows(recoveredRows);
   if (recoveredResult) {
     return recoveredResult;
+  }
+
+  const wideTableResult = buildResultFromWideTable(matrixRows);
+  if (wideTableResult) {
+    return wideTableResult;
   }
 
   throw new Error('未识别到可用的检查项目数据');
