@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Upload, FileText, Image as ImageIcon, Loader2, Gift, CheckCircle, AlertCircle, Sparkles } from 'lucide-react';
+import React, { useState } from 'react';
+import { Upload, FileText, Image as ImageIcon, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 export default function Home() {
@@ -14,52 +14,6 @@ export default function Home() {
     localStorage.setItem('userId', newId);
     return newId;
   });
-
-  const [quota, setQuota] = useState<any>(null);
-  const [redeemCode, setRedeemCode] = useState('');
-  const [redeemLoading, setRedeemLoading] = useState(false);
-  const [redeemMessage, setRedeemMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
-
-  useEffect(() => {
-    fetchQuota();
-  }, [userId]);
-
-  const fetchQuota = async () => {
-    try {
-      const res = await fetch(`/api/user/quota?userId=${userId}`);
-      const data = await res.json();
-      if (data.success) {
-        setQuota(data.data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch quota:', err);
-    }
-  };
-
-  const handleRedeem = async () => {
-    if (!redeemCode.trim()) return;
-    setRedeemLoading(true);
-    setRedeemMessage(null);
-    try {
-      const res = await fetch('/api/user/redeem', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: redeemCode.trim(), userId })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setRedeemMessage({ type: 'success', text: `兑换成功！已升级为 ${data.level === 'king' ? 'King (无限)' : 'Care+ (高级)'}` });
-        setRedeemCode('');
-        fetchQuota();
-      } else {
-        setRedeemMessage({ type: 'error', text: data.message || '兑换失败' });
-      }
-    } catch (err: any) {
-      setRedeemMessage({ type: 'error', text: err.message });
-    } finally {
-      setRedeemLoading(false);
-    }
-  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -142,60 +96,6 @@ export default function Home() {
           <h1 className="text-4xl font-semibold tracking-tight">智能报告单识别</h1>
           <p className="text-slate-500 text-lg">上传您的检查报告单图片或历史记录Excel，获取智能解析与小结。</p>
         </header>
-
-        {quota && (
-          <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-3xl p-6 text-white shadow-lg">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <Sparkles size={24} />
-                <div>
-                  <p className="text-sm opacity-90">当前等级</p>
-                  <p className="text-xl font-semibold">
-                    {quota.isUnlimited ? 'King (无限)' : quota.isPro ? 'Care+ (高级)' : 'Care (普通)'}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-sm opacity-90">剩余额度</p>
-                <p className="text-xl font-semibold">
-                  {quota.isUnlimited ? '∞' : `OCR: ${quota.ocrLimit - quota.ocrUsed} / 小结: ${quota.summaryLimit - quota.summaryUsed}`}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <Gift className="text-indigo-500" size={20} />
-            <h3 className="font-semibold">兑换码</h3>
-          </div>
-          <div className="flex space-x-3">
-            <input
-              type="text"
-              value={redeemCode}
-              onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
-              placeholder="输入兑换码升级等级..."
-              className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow text-sm"
-            />
-            <button
-              onClick={handleRedeem}
-              disabled={redeemLoading || !redeemCode.trim()}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl font-medium transition-colors disabled:opacity-50 flex items-center space-x-2"
-            >
-              {redeemLoading && <Loader2 size={16} className="animate-spin" />}
-              <span>兑换</span>
-            </button>
-          </div>
-          {redeemMessage && (
-            <div className={`mt-3 p-3 rounded-xl text-sm flex items-center space-x-2 ${
-              redeemMessage.type === 'success' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
-            }`}>
-              {redeemMessage.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-              <span>{redeemMessage.text}</span>
-            </div>
-          )}
-        </div>
 
         <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-8">
           <div className="border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center hover:bg-slate-50 transition-colors cursor-pointer relative">

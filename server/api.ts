@@ -123,25 +123,42 @@ class UpstashRedisAdapter implements RedisClient {
   }
 }
 
-function createRedisClient(): RedisClient {
+let redisClient: RedisClient | null = null;
+
+function getRedisClient(): RedisClient {
+  if (redisClient) return redisClient;
+  
   const redisUrl = process.env.REDIS_URL;
   const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
   const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
   if (redisUrl) {
     console.log('Using Redis TCP connection (REDIS_URL)');
-    return new IORedisAdapter(redisUrl);
+    redisClient = new IORedisAdapter(redisUrl);
+    return redisClient;
   }
 
   if (upstashUrl && upstashToken) {
     console.log('Using Upstash Redis REST API (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
-    return new UpstashRedisAdapter(upstashUrl, upstashToken);
+    redisClient = new UpstashRedisAdapter(upstashUrl, upstashToken);
+    return redisClient;
   }
 
   throw new Error('Redis configuration missing. Please set either REDIS_URL or (UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)');
 }
 
-const redis = createRedisClient();
+// Lazily initialized Redis client wrapper
+const redis: RedisClient = {
+  get: (key: string) => getRedisClient().get(key),
+  set: (key: string, value: string) => getRedisClient().set(key, value),
+  del: (key: string) => getRedisClient().del(key),
+  incr: (key: string) => getRedisClient().incr(key),
+  lpush: (key: string, value: string) => getRedisClient().lpush(key, value),
+  lrange: (key: string, start: number, stop: number) => getRedisClient().lrange(key, start, stop),
+  ltrim: (key: string, start: number, stop: number) => getRedisClient().ltrim(key, start, stop),
+  mget: (...keys: string[]) => getRedisClient().mget(...keys),
+  scan: (cursor: string, options?: { match?: string; count?: number }) => getRedisClient().scan(cursor, options),
+};
 
 // Initialize Gemini API
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
