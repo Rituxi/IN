@@ -339,25 +339,53 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     const levelConfig = configs[user.level] || configs.care;
     const modelToUse = levelConfig.ocrModel;
 
+    const SYSTEM_INSTRUCTION = `You are a medical data assistant for kidney disease patients.
+Your task is to extract medical examination data from images and convert it into a structured JSON object.
+
+Output Rules:
+1. Return ONLY a valid JSON object, no extra text.
+2. The JSON must match this structure EXACTLY:
+{
+  "title": "检查报告标题",
+  "date": "YYYY-MM-DD格式的日期字符串",
+  "hospital": "医院名称",
+  "doctor": "医生姓名（如无则留空字符串）",
+  "notes": "备注信息（如无则留空字符串）",
+  "items": [
+    {
+      "name": "检查项名称",
+      "value": "检测值（字符串）",
+      "unit": "单位",
+      "range": "参考范围"
+    }
+  ]
+}
+
+IMPORTANT:
+- date MUST be a STRING in format "YYYY-MM-DD" (e.g. "2025-12-15"), NOT a timestamp number
+- items array should only contain: name, value, unit, range
+- Do NOT add fields like "id", "categoryName", "configName"
+- Extract ALL test items from the image`;
+
     const response = await ai.models.generateContent({
       model: modelToUse,
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              data: base64.replace(/^data:image\/\w+;base64,/, ''),
-              mimeType: mimeType || 'image/jpeg',
+      contents: [
+        {
+          parts: [
+            {
+              inlineData: {
+                data: base64.replace(/^data:image\/\w+;base64,/, ''),
+                mimeType: mimeType || 'image/jpeg',
+              },
             },
-          },
-          {
-            text: `Extract the medical report data into a structured JSON format.
-            Required fields: title (string), date (YYYY-MM-DD), hospital (string), doctor (string), notes (string), items (array of objects).
-            Each item object must have: name (string), value (string), unit (string), range (string).
-            Do not include markdown formatting, just pure JSON.`,
-          },
-        ],
-      },
+            {
+              text: 'Extract medical data.',
+            },
+          ],
+        },
+      ],
       config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
