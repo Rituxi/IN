@@ -166,6 +166,61 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 // Constants
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
+// Level Configuration
+interface LevelConfig {
+  ocrLimit: number;
+  summaryLimit: number;
+  ocrModel: string;
+  summaryModel: string;
+}
+
+const SUPPORTED_MODELS = [
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3-flash-preview',
+  'gemini-3.1-pro-preview'
+];
+
+const DEFAULT_LEVEL_CONFIGS: Record<string, LevelConfig> = {
+  care: {
+    ocrLimit: 25,
+    summaryLimit: 25,
+    ocrModel: 'gemini-3.1-flash-lite-preview',
+    summaryModel: 'gemini-3.1-flash-lite-preview'
+  },
+  care_plus: {
+    ocrLimit: 50,
+    summaryLimit: 50,
+    ocrModel: 'gemini-3.1-flash-lite-preview',
+    summaryModel: 'gemini-3.1-flash-lite-preview'
+  },
+  king: {
+    ocrLimit: 9999,
+    summaryLimit: 9999,
+    ocrModel: 'gemini-3-flash-preview',
+    summaryModel: 'gemini-3-flash-preview'
+  }
+};
+
+async function getLevelConfigs(): Promise<Record<string, LevelConfig>> {
+  try {
+    const configStr = await redis.get('level_configs');
+    if (configStr) {
+      const parsed = typeof configStr === 'string' ? JSON.parse(configStr) : configStr;
+      return parsed;
+    }
+    await redis.set('level_configs', JSON.stringify(DEFAULT_LEVEL_CONFIGS));
+    return { ...DEFAULT_LEVEL_CONFIGS };
+  } catch (error) {
+    console.error('Failed to parse level configs from Redis, using defaults:', error);
+    await redis.set('level_configs', JSON.stringify(DEFAULT_LEVEL_CONFIGS));
+    return { ...DEFAULT_LEVEL_CONFIGS };
+  }
+}
+
+async function updateLevelConfigs(configs: Record<string, LevelConfig>): Promise<void> {
+  await redis.set('level_configs', JSON.stringify(configs));
+}
+
 // Helper: Check Admin Auth
 const checkAdmin = (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
@@ -183,14 +238,16 @@ async function getUser(userId: string) {
     return typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
   }
   
-  // Create new user if not exists
+  const configs = await getLevelConfigs();
+  const defaultConfig = configs.care;
+  
   const newUser = {
     userId,
     level: 'care',
     ocrUsed: 0,
-    ocrLimit: 25,
+    ocrLimit: defaultConfig.ocrLimit,
     summaryUsed: 0,
-    summaryLimit: 25,
+    summaryLimit: defaultConfig.summaryLimit,
     extraQuota: 0,
     totalUsedCount: 0,
     isUnlimited: false,
@@ -207,24 +264,16 @@ async function updateUser(userId: string, data: any) {
   const user = await getUser(userId);
   const updated = { ...user, ...data };
   
-  // Update limits based on level
   if (data.level) {
-    if (data.level === 'king') {
-      updated.isUnlimited = true;
-      updated.isPro = true;
-      updated.ocrLimit = 9999;
-      updated.summaryLimit = 9999;
-    } else if (data.level === 'care_plus') {
-      updated.isUnlimited = false;
-      updated.isPro = true;
-      updated.ocrLimit = 50;
-      updated.summaryLimit = 50;
-    } else {
-      updated.isUnlimited = false;
-      updated.isPro = false;
-      updated.ocrLimit = 25;
-      updated.summaryLimit = 25;
+    const configs = await getLevelConfigs();
+    const config = configs[data.level];
+    if (!config) {
+      throw new Error(`Invalid level: ${data.level}`);
     }
+    updated.ocrLimit = config.ocrLimit;
+    updated.summaryLimit = config.summaryLimit;
+    updated.isUnlimited = data.level === 'king';
+    updated.isPro = data.level === 'king' || data.level === 'care_plus';
   }
   
   await redis.set(`user:${userId}`, JSON.stringify(updated));
@@ -273,9 +322,12 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
       return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: '本月免费额度已用完' });
     }
 
-    // Call Gemini
+    const configs = await getLevelConfigs();
+    const levelConfig = configs[user.level] || configs.care;
+    const modelToUse = levelConfig.ocrModel;
+
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: modelToUse,
       contents: {
         parts: [
           {
@@ -322,12 +374,10 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     const resultText = response.text || '{}';
     const resultJson = JSON.parse(resultText);
 
-    // Update user quota
     user.ocrUsed += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${userId}`, JSON.stringify(user));
     
-    // Log usage
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
     await logUsage(userId, ip as string, 'ocr', user.ocrUsed, user.totalUsedCount);
 
@@ -354,24 +404,25 @@ apiRouter.post('/summary/text', async (req, res) => {
       return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: '本月次数已用完' });
     }
 
-    // Call Gemini
+    const configs = await getLevelConfigs();
+    const levelConfig = configs[user.level] || configs.care;
+    const modelToUse = levelConfig.summaryModel;
+
     const prompt = `Please provide a smart summary for the following medical exam data.
     Data: ${JSON.stringify(examData)}
     Provide a concise, professional, and easy-to-understand summary of the indicators. Highlight any abnormalities.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: modelToUse,
       contents: prompt,
     });
 
     const summary = response.text || 'No summary generated.';
 
-    // Update user quota
     user.summaryUsed += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${userId}`, JSON.stringify(user));
     
-    // Log usage
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
     await logUsage(userId, ip as string, 'summary', user.summaryUsed, user.totalUsedCount);
 
@@ -382,7 +433,7 @@ apiRouter.post('/summary/text', async (req, res) => {
         remaining: user.isUnlimited ? 9999 : (totalSummaryLimit - user.summaryUsed),
         used: user.summaryUsed,
         limit: totalSummaryLimit,
-        resetAt: '2026-04-01 00:00:00' // Simplified
+        resetAt: '2026-04-01 00:00:00'
       }
     });
   } catch (error: any) {
@@ -581,6 +632,31 @@ apiRouter.delete('/admin/redeem/:code', checkAdmin, async (req, res) => {
     const { code } = req.params;
     await redis.del(`redeem:${code}`);
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.get('/admin/level-configs', checkAdmin, async (req, res) => {
+  try {
+    const configs = await getLevelConfigs();
+    res.json({
+      configs,
+      supportedModels: SUPPORTED_MODELS
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post('/admin/level-configs', checkAdmin, async (req, res) => {
+  try {
+    const { configs } = req.body;
+    if (!configs) {
+      return res.status(400).json({ error: 'Missing configs' });
+    }
+    await updateLevelConfigs(configs);
+    res.json({ success: true, configs });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

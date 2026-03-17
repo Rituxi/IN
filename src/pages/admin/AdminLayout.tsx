@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Users, FileText, Key, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, FileText, Key, LogOut, Settings } from 'lucide-react';
 
 export default function AdminLayout() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -56,6 +56,7 @@ export default function AdminLayout() {
     { to: '/admin/logs', icon: FileText, label: '使用记录' },
     { to: '/admin/users', icon: Users, label: '用户管理' },
     { to: '/admin/redeem', icon: Key, label: '兑换码' },
+    { to: '/admin/level-config', icon: Settings, label: '等级配置' },
   ];
 
   return (

@@ -5,6 +5,7 @@ import Dashboard from './pages/admin/Dashboard';
 import Logs from './pages/admin/Logs';
 import Users from './pages/admin/Users';
 import Redeem from './pages/admin/Redeem';
+import LevelConfig from './pages/admin/LevelConfig';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="logs" element={<Logs />} />
           <Route path="users" element={<Users />} />
           <Route path="redeem" element={<Redeem />} />
+          <Route path="level-config" element={<LevelConfig />} />
         </Route>
       </Routes>
     </BrowserRouter>
