@@ -40,6 +40,7 @@ interface UserRecord {
   note: string;
   status: string;
   group: string;
+  quotaMonthKey?: string;
 }
 
 class IORedisAdapter implements RedisClient {
@@ -249,6 +250,55 @@ const IP_API_CONFIG = {
 const USER_GROUPS_KEY = 'admin:user-groups';
 const DEFAULT_USER_GROUP = '\u672a\u5206\u7ec4';
 const ipLocationCache = new Map<string, string>();
+const QUOTA_TIMEZONE = process.env.QUOTA_TIMEZONE || 'Asia/Shanghai';
+
+function getDatePartsInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const getPart = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '00';
+  return {
+    year: Number(getPart('year')),
+    month: Number(getPart('month')),
+    day: Number(getPart('day')),
+  };
+}
+
+function getDateKeyInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE): string {
+  const { year, month, day } = getDatePartsInTimezone(date, timeZone);
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function getMonthKeyInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE): string {
+  const { year, month } = getDatePartsInTimezone(date, timeZone);
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
+}
+
+function getMonthKeyFromIso(value: string | undefined, timeZone: string = QUOTA_TIMEZONE): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return getMonthKeyInTimezone(date, timeZone);
+}
+
+function getNextMonthlyResetAt(timeZone: string = QUOTA_TIMEZONE): string {
+  const { year, month } = getDatePartsInTimezone(new Date(), timeZone);
+  let nextYear = year;
+  let nextMonth = month + 1;
+  if (nextMonth > 12) {
+    nextMonth = 1;
+    nextYear += 1;
+  }
+  return `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01 00:00:00`;
+}
 
 async function checkIpApiRateLimit(): Promise<boolean> {
   const key = 'rate_limit:ip_api';
@@ -637,9 +687,35 @@ async function getUser(userId: string) {
     note: '',
     status: 'active',
     group: DEFAULT_USER_GROUP,
+    quotaMonthKey: getMonthKeyInTimezone(),
   };
   await redis.set(`user:${userId}`, JSON.stringify(newUser));
   return newUser;
+}
+
+async function ensureMonthlyQuotaReset(user: UserRecord): Promise<UserRecord> {
+  const currentMonthKey = getMonthKeyInTimezone();
+  const savedMonthKey = typeof user.quotaMonthKey === 'string' ? user.quotaMonthKey : '';
+  const fallbackMonthKey = getMonthKeyFromIso(user.firstUsedAt) || currentMonthKey;
+  const lastMonthKey = savedMonthKey || fallbackMonthKey;
+
+  if (lastMonthKey === currentMonthKey) {
+    if (savedMonthKey === currentMonthKey) {
+      return user;
+    }
+    const patchedUser: UserRecord = { ...user, quotaMonthKey: currentMonthKey };
+    await redis.set(`user:${user.userId}`, JSON.stringify(patchedUser));
+    return patchedUser;
+  }
+
+  const resetUser: UserRecord = {
+    ...user,
+    ocrUsed: 0,
+    summaryUsed: 0,
+    quotaMonthKey: currentMonthKey,
+  };
+  await redis.set(`user:${user.userId}`, JSON.stringify(resetUser));
+  return resetUser;
 }
 
 async function updateUser(userId: string, data: any) {
@@ -789,7 +865,7 @@ async function logUsage(userId: string, ip: string, feature: string, monthlyUsed
   
   // Update global stats
   await redis.incr('stats:totalCalls');
-  const today = new Date().toISOString().split('T')[0];
+  const today = getDateKeyInTimezone();
   await redis.incr(`stats:dailyCalls:${today}`);
   const month = today.substring(0, 7);
   await redis.incr(`stats:monthlyCalls:${month}`);
@@ -889,8 +965,9 @@ async function validateAndGetUser(openid: string | undefined, userId: string | u
   }
   
   const user = await getUser(effectiveUserId);
+  const normalizedUser = await ensureMonthlyQuotaReset(user);
   
-  return { valid: true, user, effectiveUserId };
+  return { valid: true, user: normalizedUser, effectiveUserId };
 }
 
 // 1. OCR API
@@ -1000,6 +1077,7 @@ apiRouter.post('/summary/text', async (req, res) => {
     });
 
     const summary = response.text || 'No summary generated.';
+    const nextResetAt = getNextMonthlyResetAt();
 
     user.summaryUsed += 1;
     user.totalUsedCount += 1;
@@ -1015,7 +1093,7 @@ apiRouter.post('/summary/text', async (req, res) => {
         remaining: user.isUnlimited ? 9999 : totalSummaryLimit - user.summaryUsed,
         used: user.summaryUsed,
         limit: totalSummaryLimit,
-        resetAt: '2026-04-01 00:00:00',
+        resetAt: nextResetAt,
       },
     });
   } catch (error: any) {
@@ -1036,19 +1114,21 @@ apiRouter.get('/user/quota', async (req, res) => {
     }
 
     const user = await getUser(effectiveUserId);
+    const normalizedUser = await ensureMonthlyQuotaReset(user);
+    const nextResetAt = getNextMonthlyResetAt();
     
     res.json({
       success: true,
       data: {
-        userId: user.userId,
-        isPro: user.isPro,
-        isUnlimited: user.isUnlimited,
-        extraQuota: user.extraQuota,
-        ocrUsed: user.ocrUsed,
-        ocrLimit: user.ocrLimit,
-        summaryUsed: user.summaryUsed,
-        summaryLimit: user.summaryLimit,
-        resetAt: '2026-04-01 00:00:00'
+        userId: normalizedUser.userId,
+        isPro: normalizedUser.isPro,
+        isUnlimited: normalizedUser.isUnlimited,
+        extraQuota: normalizedUser.extraQuota,
+        ocrUsed: normalizedUser.ocrUsed,
+        ocrLimit: normalizedUser.ocrLimit,
+        summaryUsed: normalizedUser.summaryUsed,
+        summaryLimit: normalizedUser.summaryLimit,
+        resetAt: nextResetAt
       }
     });
   } catch (error: any) {
@@ -1098,7 +1178,7 @@ apiRouter.post('/user/redeem', async (req, res) => {
 apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
   try {
     const totalCalls = await redis.get('stats:totalCalls') || 0;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDateKeyInTimezone();
     const todayCalls = await redis.get(`stats:dailyCalls:${today}`) || 0;
     const month = today.substring(0, 7);
     const monthCalls = await redis.get(`stats:monthlyCalls:${month}`) || 0;
