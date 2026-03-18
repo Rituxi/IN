@@ -13,6 +13,8 @@ interface User {
   summaryLimit: number;
   extraOcrQuota: number;
   extraSummaryQuota: number;
+  totalOcrUsedCount: number;
+  totalSummaryUsedCount: number;
   totalUsedCount: number;
   isUnlimited: boolean;
   isPro: boolean;
@@ -492,9 +494,9 @@ export default function Users() {
 
                     <div className="flex flex-col justify-center">
                       <div className="flex items-center gap-2 text-[14px] font-medium text-zinc-700">
-                        <span>{user.ocrUsed + user.summaryUsed}</span>
+                        <span>{user.totalOcrUsedCount ?? user.ocrUsed}</span>
                         <span className="font-light text-zinc-300">|</span>
-                        <span>{user.totalUsedCount}</span>
+                        <span>{user.totalSummaryUsedCount ?? user.summaryUsed}</span>
                       </div>
                     </div>
 
