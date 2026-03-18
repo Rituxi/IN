@@ -773,11 +773,21 @@ async function getUser(userId: string) {
   const userStr = await redis.get(`user:${userId}`);
   if (userStr) {
     const parsed = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
-    const normalized = normalizeUserRecord(parsed, userId);
+    const usageFeatureTotals =
+      parsed?.totalOcrUsedCount === undefined || parsed?.totalSummaryUsedCount === undefined
+        ? await getUsageFeatureTotals()
+        : undefined;
+    const normalized = fillMissingFeatureTotals(
+      parsed,
+      normalizeUserRecord(parsed, userId),
+      usageFeatureTotals,
+    );
     if (
       parsed?.extraOcrQuota === undefined ||
       parsed?.extraSummaryQuota === undefined ||
-      parsed?.group !== normalized.group
+      parsed?.group !== normalized.group ||
+      parsed?.totalOcrUsedCount === undefined ||
+      parsed?.totalSummaryUsedCount === undefined
     ) {
       await redis.set(`user:${userId}`, JSON.stringify(normalized));
     }
@@ -1021,6 +1031,61 @@ function rebuildFeatureTotals<T extends { userId?: string; feature?: string; use
   }
 
   return logs;
+}
+
+async function getUsageFeatureTotals() {
+  const totals = new Map<string, { ocr: number; summary: number }>();
+  const logsStr = await redis.lrange('usage_logs', 0, 999);
+  const logs = logsStr.map((item) => (typeof item === 'string' ? JSON.parse(item) : item));
+  rebuildFeatureTotals(logs);
+
+  for (const log of logs) {
+    const userId = toText(log?.userId).trim();
+    const feature = toText(log?.feature).trim();
+    if (!userId || (feature !== 'ocr' && feature !== 'summary')) {
+      continue;
+    }
+
+    const current = totals.get(userId) || { ocr: 0, summary: 0 };
+    const nextCount = toNonNegativeNumber(log?.totalUsedCount);
+    if (feature === 'ocr') {
+      current.ocr = Math.max(current.ocr, nextCount);
+    } else {
+      current.summary = Math.max(current.summary, nextCount);
+    }
+    totals.set(userId, current);
+  }
+
+  return totals;
+}
+
+function fillMissingFeatureTotals(
+  raw: any,
+  normalized: UserRecord,
+  usageFeatureTotals?: Map<string, { ocr: number; summary: number }>,
+): UserRecord {
+  const hasStoredOcrTotal = raw?.totalOcrUsedCount !== undefined && raw?.totalOcrUsedCount !== null;
+  const hasStoredSummaryTotal = raw?.totalSummaryUsedCount !== undefined && raw?.totalSummaryUsedCount !== null;
+
+  if (hasStoredOcrTotal && hasStoredSummaryTotal) {
+    return normalized;
+  }
+
+  const logTotals = usageFeatureTotals?.get(normalized.userId);
+  if (!logTotals) {
+    return normalized;
+  }
+
+  return {
+    ...normalized,
+    totalOcrUsedCount: hasStoredOcrTotal ? normalized.totalOcrUsedCount : logTotals.ocr,
+    totalSummaryUsedCount: hasStoredSummaryTotal ? normalized.totalSummaryUsedCount : logTotals.summary,
+    totalUsedCount:
+      hasStoredOcrTotal && hasStoredSummaryTotal
+        ? normalized.totalUsedCount
+        : (hasStoredOcrTotal ? normalized.totalOcrUsedCount : logTotals.ocr) +
+          (hasStoredSummaryTotal ? normalized.totalSummaryUsedCount : logTotals.summary),
+  };
 }
 
 function normalizeGroupName(value: unknown): string {
@@ -1454,6 +1519,7 @@ apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
 
 apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
   try {
+    const usageFeatureTotals = await getUsageFeatureTotals();
     let cursor = '0';
     let users: UserRecord[] = [];
     do {
@@ -1465,7 +1531,13 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
           .filter(Boolean)
           .map(u => typeof u === 'string' ? JSON.parse(u) : u)
           .filter((u: any) => u?.userId && !u.userId.startsWith('web_'))
-          .map((u: any) => normalizeUserRecord(u, String(u?.userId || '')));
+          .map((u: any) =>
+            fillMissingFeatureTotals(
+              u,
+              normalizeUserRecord(u, String(u?.userId || '')),
+              usageFeatureTotals,
+            ),
+          );
         users.push(...allUsers);
       }
     } while (cursor !== '0');
