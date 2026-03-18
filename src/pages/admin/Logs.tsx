@@ -139,7 +139,7 @@ export default function Logs() {
 
   return (
     <div className="flex flex-col gap-6 animate-in fade-in duration-300">
-      <div className="rounded-[32px] bg-white/38 px-4 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:px-6 sm:py-6">
+      <div className="px-2 py-1 sm:px-0 sm:py-0">
         <div className="flex flex-wrap items-end justify-between gap-4 px-2">
           <div>
             <div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.24em] text-zinc-400">
@@ -191,7 +191,7 @@ export default function Logs() {
         </div>
       </div>
 
-      <div className="rounded-[32px] bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:p-6">
+      <div className="px-2 sm:px-0">
         <div className="px-2 mb-4">
           <h3 className="text-[18px] font-semibold text-zinc-800">最近日志</h3>
           <p className="text-[13px] text-zinc-400">默认展示最近 100 条记录，删除操作仍然直接调用原来的后台接口。</p>

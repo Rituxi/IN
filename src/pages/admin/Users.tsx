@@ -329,7 +329,7 @@ export default function Users() {
   return (
     <>
       <div className="flex flex-col gap-6 animate-in fade-in duration-300">
-        <div className="rounded-[32px] bg-white/38 px-4 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:px-6 sm:py-6">
+        <div className="px-2 py-1 sm:px-0 sm:py-0">
           <div className="flex flex-wrap items-end justify-between gap-4 px-2">
             <div>
               <h2 className="mb-2 text-[28px] font-semibold tracking-tight text-zinc-900">用户管理</h2>
@@ -425,7 +425,7 @@ export default function Users() {
           </div>
         </div>
 
-        <div className="rounded-[32px] bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:p-6">
+        <div className="px-2 sm:px-0">
           <div className="hidden grid-cols-[1.5fr_auto_auto_1.2fr_1fr_1fr_1.5fr_auto] gap-x-6 items-center px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">
             <div>用户 ID</div>
             <div className="w-16">分组</div>
