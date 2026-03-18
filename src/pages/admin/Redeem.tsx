@@ -40,6 +40,7 @@ export default function Redeem() {
 
   const handleGenerate = async () => {
     try {
+      const safeCount = Math.max(1, Math.min(50, Number(generateCount) || 1));
       const token = localStorage.getItem('adminToken');
       const res = await fetch('/api/admin/redeem', {
         method: 'POST',
@@ -47,10 +48,11 @@ export default function Redeem() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ type: generateType, count: generateCount }),
+        body: JSON.stringify({ type: generateType, count: safeCount }),
       });
 
       if (res.ok) {
+        setGenerateCount(safeCount);
         fetchCodes();
       }
     } catch (err) {
@@ -83,126 +85,138 @@ export default function Redeem() {
   const unusedCodes = codes.filter((code) => code.status === 'unused');
 
   return (
-    <div className="space-y-6">
-      <section className="flex flex-col gap-4 rounded-[28px] bg-[linear-gradient(135deg,rgba(255,248,236,0.92),rgba(255,255,255,0.96))] p-6 sm:flex-row sm:items-end sm:justify-between">
-        <div className="max-w-2xl">
-          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">Redeem Codes</div>
-          <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)]">兑换码管理</h2>
-          <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">批量生成并维护会员升级兑换码，当前仅展示还可使用的兑换码。</p>
+    <div className="flex flex-col gap-6 animate-in fade-in duration-300 pb-10">
+      <div className="flex flex-wrap items-end justify-between gap-4 px-2">
+        <div>
+          <div className="mb-1 text-[11px] font-bold uppercase tracking-widest text-zinc-400">Redeem Codes</div>
+          <h2 className="mb-2 flex items-center gap-3 text-[28px] font-semibold tracking-tight text-zinc-900">兑换码</h2>
+          <p className="text-[13px] font-medium text-zinc-500">生成、查看和维护可用兑换码，保留现有后台逻辑不变。</p>
         </div>
         <button
           onClick={fetchCodes}
-          className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/80 bg-white/90 px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-900)] transition hover:bg-white"
+          className="flex items-center gap-2 rounded-full bg-white/60 px-5 py-2.5 text-[14px] font-medium text-zinc-800 shadow-sm ring-1 ring-white/80 transition-all hover:bg-white active:scale-95"
         >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          刷新
+          <RefreshCw size={15} className={loading ? 'animate-spin text-zinc-500' : 'text-zinc-500'} />
+          刷新数据
         </button>
-      </section>
+      </div>
 
-      <section className="rounded-[30px] border border-[var(--color-ink-200)] bg-white p-6 shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
+      <div className="rounded-[28px] bg-white/50 p-6 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.03)] ring-1 ring-white/80 backdrop-blur-2xl">
         <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
           <div className="space-y-2">
-            <label className="text-sm font-semibold text-[var(--color-ink-800)]">生成类型</label>
+            <label className="text-[13px] font-semibold text-zinc-700">生成类型</label>
             <select
               value={generateType}
               onChange={(e) => setGenerateType(e.target.value as 'care_plus' | 'king')}
-              className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
+              className="w-full rounded-[14px] border border-transparent bg-zinc-100/60 px-4 py-3 text-[14px] font-medium text-zinc-800 outline-none transition-all focus:bg-white focus:ring-2 focus:ring-zinc-300"
             >
-              <option value="care_plus">Care+ 高级版</option>
+              <option value="care_plus">Care+ 进阶版</option>
               <option value="king">King 无限版</option>
             </select>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-semibold text-[var(--color-ink-800)]">生成数量</label>
+            <label className="text-[13px] font-semibold text-zinc-700">生成数量</label>
             <input
               type="number"
               min="1"
               max="50"
               value={generateCount}
-              onChange={(e) => setGenerateCount(Number(e.target.value))}
-              className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
+              onChange={(e) => {
+                const value = Math.max(1, Math.min(50, Number(e.target.value) || 1));
+                setGenerateCount(value);
+              }}
+              className="w-full rounded-[14px] border border-transparent bg-zinc-100/60 px-4 py-3 text-[14px] font-medium text-zinc-800 outline-none transition-all focus:bg-white focus:ring-2 focus:ring-zinc-300"
             />
           </div>
 
           <button
             onClick={handleGenerate}
-            className="inline-flex items-center justify-center gap-2 self-end rounded-2xl bg-[var(--color-brand-600)] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)]"
+            className="flex items-center justify-center gap-2 self-end rounded-full bg-zinc-900 px-6 py-3 text-[14px] font-medium text-white shadow-md transition-all hover:bg-black active:scale-95"
           >
             <Plus size={16} />
             批量生成
           </button>
         </div>
-      </section>
+      </div>
 
-      <section className="overflow-hidden rounded-[30px] border border-[var(--color-ink-200)] bg-white shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
-        <div className="border-b border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-6 py-4">
-          <div className="flex items-center gap-2 text-[var(--color-ink-950)]">
-            <Key size={18} className="text-[var(--color-brand-600)]" />
-            <h3 className="text-lg font-bold">可用兑换码 ({unusedCodes.length})</h3>
-          </div>
-          <p className="mt-1 text-sm text-[var(--color-ink-700)]">已使用或已删除的兑换码不会显示在这里。</p>
+      <div className="w-full">
+        <div className="mb-4 px-2">
+          <h3 className="text-[18px] font-semibold text-zinc-800">可用兑换码</h3>
+          <p className="text-[13px] text-zinc-400">仅展示当前仍可使用的兑换码。</p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left">
-            <thead className="bg-white text-sm text-[var(--color-ink-700)]">
-              <tr className="border-b border-[var(--color-ink-200)]">
-                <th className="px-6 py-4 font-semibold">兑换码</th>
-                <th className="px-6 py-4 font-semibold">类型</th>
-                <th className="px-6 py-4 font-semibold">生成时间</th>
-                <th className="px-6 py-4 font-semibold">过期时间</th>
-                <th className="px-6 py-4 text-right font-semibold">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--color-ink-100)] text-sm text-[var(--color-ink-900)]">
-              {unusedCodes.map((code) => (
-                <tr key={code.code} className="transition hover:bg-[var(--color-brand-50)]/45">
-                  <td className="px-6 py-4 font-mono font-semibold tracking-wide text-[var(--color-ink-950)]">{code.code}</td>
-                  <td className="px-6 py-4">
-                    <span
-                      className={[
-                        'rounded-full px-3 py-1 text-xs font-semibold',
-                        code.type === 'king' ? 'bg-amber-50 text-amber-700' : 'bg-[var(--color-brand-50)] text-[var(--color-brand-700)]',
-                      ].join(' ')}
-                    >
-                      {code.type === 'king' ? 'King' : 'Care+'}
-                    </span>
-                  </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(code.createdAt), 'yyyy-MM-dd HH:mm')}</td>
-                  <td className="whitespace-nowrap px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(code.expiredAt), 'yyyy-MM-dd')}</td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="inline-flex items-center gap-2">
-                      <button
-                        onClick={() => handleCopy(code.code)}
-                        className="rounded-xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-2 text-[var(--color-ink-700)] transition hover:border-[var(--color-brand-200)] hover:bg-[var(--color-brand-50)] hover:text-[var(--color-brand-700)]"
-                        title="复制"
-                      >
-                        <Copy size={16} />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(code.code)}
-                        className="rounded-xl border border-red-100 bg-red-50 p-2 text-red-600 transition hover:bg-red-100"
-                        title="删除"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-
-              {unusedCodes.length === 0 && !loading && (
-                <tr>
-                  <td colSpan={5} className="px-6 py-16 text-center text-[var(--color-ink-700)]">
-                    暂无可用兑换码
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-[minmax(0,1.5fr)_140px_160px_140px_80px] gap-x-6 items-center px-8 py-3 text-[13px] font-medium text-zinc-400 max-lg:hidden">
+          <div>兑换码</div>
+          <div>类型</div>
+          <div>生成时间</div>
+          <div>过期时间</div>
+          <div className="flex justify-end text-right">操作</div>
         </div>
-      </section>
+
+        <div className="space-y-3">
+          {unusedCodes.map((code) => (
+            <div
+              key={code.code}
+              className="grid items-center gap-x-6 gap-y-3 rounded-[20px] bg-white/50 px-8 py-4 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.03)] ring-1 ring-white/80 transition-all duration-300 hover:bg-white/70 hover:shadow-[0_8px_32px_-8px_rgba(0,0,0,0.06)] lg:grid-cols-[minmax(0,1.5fr)_140px_160px_140px_80px]"
+            >
+              <div className="min-w-0">
+                <div className="text-[12px] font-medium text-zinc-400 lg:hidden">兑换码</div>
+                <span className="block truncate font-mono text-[14px] font-semibold tracking-tight text-zinc-900" title={code.code}>
+                  {code.code}
+                </span>
+              </div>
+
+              <div>
+                <div className="text-[12px] font-medium text-zinc-400 lg:hidden">类型</div>
+                <span
+                  className={[
+                    'inline-flex items-center rounded-[8px] px-2.5 py-1 text-[12px] font-bold tracking-wide ring-1',
+                    code.type === 'king'
+                      ? 'bg-amber-50/80 text-amber-600 ring-amber-100/70'
+                      : 'bg-emerald-50/80 text-emerald-600 ring-emerald-100/70',
+                  ].join(' ')}
+                >
+                  {code.type === 'king' ? 'King' : 'Care+'}
+                </span>
+              </div>
+
+              <div className="text-[13px] font-medium text-zinc-600">
+                <div className="text-[12px] font-medium text-zinc-400 lg:hidden">生成时间</div>
+                {format(new Date(code.createdAt), 'yyyy-MM-dd HH:mm')}
+              </div>
+
+              <div className="text-[13px] font-medium text-zinc-600">
+                <div className="text-[12px] font-medium text-zinc-400 lg:hidden">过期时间</div>
+                {format(new Date(code.expiredAt), 'yyyy-MM-dd')}
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => handleCopy(code.code)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-300 transition-all duration-200 hover:bg-zinc-100 hover:text-zinc-700"
+                  title="复制"
+                >
+                  <Copy size={16} />
+                </button>
+                <button
+                  onClick={() => handleDelete(code.code)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-300 transition-all duration-200 hover:bg-red-50 hover:text-red-500"
+                  title="删除"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {unusedCodes.length === 0 && !loading && (
+            <div className="rounded-[20px] bg-white/50 px-8 py-12 text-center text-[14px] font-medium text-zinc-400 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.03)] ring-1 ring-white/80">
+              暂无可用兑换码
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
