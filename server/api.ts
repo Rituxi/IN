@@ -32,7 +32,8 @@ interface UserRecord {
   ocrLimit: number;
   summaryUsed: number;
   summaryLimit: number;
-  extraQuota: number;
+  extraOcrQuota: number;
+  extraSummaryQuota: number;
   totalUsedCount: number;
   isUnlimited: boolean;
   isPro: boolean;
@@ -316,6 +317,51 @@ function getNextMonthlyResetAt(timeZone: string = QUOTA_TIMEZONE): string {
     nextYear += 1;
   }
   return `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01 00:00:00`;
+}
+
+function toNonNegativeNumber(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function normalizeUserLevel(value: unknown): UserLevel {
+  if (value === 'care_plus' || value === 'king') {
+    return value;
+  }
+  return 'care';
+}
+
+function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord {
+  const level = normalizeUserLevel(raw?.level);
+  const legacyExtraQuota = toNonNegativeNumber(raw?.extraQuota);
+  const extraOcrQuota =
+    raw?.extraOcrQuota === undefined ? legacyExtraQuota : toNonNegativeNumber(raw.extraOcrQuota);
+  const extraSummaryQuota =
+    raw?.extraSummaryQuota === undefined ? legacyExtraQuota : toNonNegativeNumber(raw.extraSummaryQuota);
+  const normalizedUserId = String(raw?.userId || fallbackUserId || '').trim();
+
+  return {
+    userId: normalizedUserId,
+    level,
+    ocrUsed: toNonNegativeNumber(raw?.ocrUsed),
+    ocrLimit: toNonNegativeNumber(raw?.ocrLimit),
+    summaryUsed: toNonNegativeNumber(raw?.summaryUsed),
+    summaryLimit: toNonNegativeNumber(raw?.summaryLimit),
+    extraOcrQuota,
+    extraSummaryQuota,
+    totalUsedCount: toNonNegativeNumber(raw?.totalUsedCount),
+    isUnlimited: typeof raw?.isUnlimited === 'boolean' ? raw.isUnlimited : level === 'king',
+    isPro: typeof raw?.isPro === 'boolean' ? raw.isPro : level === 'king' || level === 'care_plus',
+    firstUsedAt:
+      typeof raw?.firstUsedAt === 'string' && raw.firstUsedAt.trim() ? raw.firstUsedAt : new Date().toISOString(),
+    note: typeof raw?.note === 'string' ? raw.note : '',
+    status: typeof raw?.status === 'string' && raw.status.trim() ? raw.status : 'active',
+    group: typeof raw?.group === 'string' && raw.group.trim() ? raw.group.trim() : DEFAULT_USER_GROUP,
+    quotaMonthKey: typeof raw?.quotaMonthKey === 'string' && raw.quotaMonthKey.trim() ? raw.quotaMonthKey : undefined,
+  };
 }
 
 async function checkIpApiRateLimit(): Promise<boolean> {
@@ -723,10 +769,15 @@ async function getUser(userId: string) {
   const userStr = await redis.get(`user:${userId}`);
   if (userStr) {
     const parsed = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
-    return {
-      ...parsed,
-      group: typeof parsed.group === 'string' && parsed.group.trim() ? parsed.group.trim() : DEFAULT_USER_GROUP,
-    } as UserRecord;
+    const normalized = normalizeUserRecord(parsed, userId);
+    if (
+      parsed?.extraOcrQuota === undefined ||
+      parsed?.extraSummaryQuota === undefined ||
+      parsed?.group !== normalized.group
+    ) {
+      await redis.set(`user:${userId}`, JSON.stringify(normalized));
+    }
+    return normalized;
   }
   
   const configs = await getLevelConfigs();
@@ -739,7 +790,8 @@ async function getUser(userId: string) {
     ocrLimit: defaultConfig.ocrLimit,
     summaryUsed: 0,
     summaryLimit: defaultConfig.summaryLimit,
-    extraQuota: 0,
+    extraOcrQuota: 0,
+    extraSummaryQuota: 0,
     totalUsedCount: 0,
     isUnlimited: false,
     isPro: false,
@@ -780,11 +832,23 @@ async function ensureMonthlyQuotaReset(user: UserRecord): Promise<UserRecord> {
 
 async function updateUser(userId: string, data: any) {
   const user = await getUser(userId);
-  const updated: UserRecord = {
+  const hasLegacyExtraQuota = data?.extraQuota !== undefined;
+  const normalizedLegacyExtraQuota = hasLegacyExtraQuota ? toNonNegativeNumber(data.extraQuota) : null;
+  const nextExtraOcrQuota =
+    data?.extraOcrQuota !== undefined
+      ? toNonNegativeNumber(data.extraOcrQuota)
+      : normalizedLegacyExtraQuota ?? user.extraOcrQuota;
+  const nextExtraSummaryQuota =
+    data?.extraSummaryQuota !== undefined
+      ? toNonNegativeNumber(data.extraSummaryQuota)
+      : normalizedLegacyExtraQuota ?? user.extraSummaryQuota;
+  const updated: UserRecord = normalizeUserRecord({
     ...user,
     ...data,
+    extraOcrQuota: nextExtraOcrQuota,
+    extraSummaryQuota: nextExtraSummaryQuota,
     group: typeof data.group === 'string' && data.group.trim() ? data.group.trim() : user.group || DEFAULT_USER_GROUP,
-  };
+  }, userId);
   
   if (data.level) {
     const configs = await getLevelConfigs();
@@ -1047,7 +1111,7 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
 
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
-    const totalOcrLimit = user.ocrLimit + user.extraQuota;
+    const totalOcrLimit = user.ocrLimit + user.extraOcrQuota;
     if (!user.isUnlimited && user.ocrUsed >= totalOcrLimit) {
       return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: 'Monthly OCR quota exceeded' });
     }
@@ -1179,7 +1243,7 @@ apiRouter.post('/summary/text', async (req, res) => {
 
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
-    const totalSummaryLimit = user.summaryLimit + user.extraQuota;
+    const totalSummaryLimit = user.summaryLimit + user.extraSummaryQuota;
     if (!user.isUnlimited && user.summaryUsed >= totalSummaryLimit) {
       return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: 'Monthly summary quota exceeded' });
     }
@@ -1248,7 +1312,8 @@ apiRouter.get('/user/quota', async (req, res) => {
         userId: normalizedUser.userId,
         isPro: normalizedUser.isPro,
         isUnlimited: normalizedUser.isUnlimited,
-        extraQuota: normalizedUser.extraQuota,
+        extraOcrQuota: normalizedUser.extraOcrQuota,
+        extraSummaryQuota: normalizedUser.extraSummaryQuota,
         ocrUsed: normalizedUser.ocrUsed,
         ocrLimit: normalizedUser.ocrLimit,
         summaryUsed: normalizedUser.summaryUsed,
@@ -1371,10 +1436,7 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
           .filter(Boolean)
           .map(u => typeof u === 'string' ? JSON.parse(u) : u)
           .filter((u: any) => u?.userId && !u.userId.startsWith('web_'))
-          .map((u: any) => ({
-            ...u,
-            group: typeof u.group === 'string' && u.group.trim() ? u.group.trim() : DEFAULT_USER_GROUP,
-          }));
+          .map((u: any) => normalizeUserRecord(u, String(u?.userId || '')));
         users.push(...allUsers);
       }
     } while (cursor !== '0');
