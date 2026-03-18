@@ -1,16 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import {
-  Crown,
-  FolderPlus,
-  Plus,
-  RefreshCw,
-  Search,
-  Shield,
-  Star,
-  Users as UsersIcon,
-  X,
-} from 'lucide-react';
+import { FolderPlus, Search, Shield, Star, Users as UsersIcon, X } from 'lucide-react';
 
 type UserLevel = 'care' | 'care_plus' | 'king';
 
@@ -42,39 +32,11 @@ interface UserConfigDraft {
 
 const DEFAULT_GROUP = '未分组';
 
-const LEVEL_META: Record<
-  UserLevel | 'all',
-  {
-    label: string;
-    icon: typeof UsersIcon;
-    countTone: string;
-    activeClass: string;
-  }
-> = {
-  all: {
-    label: '全部',
-    icon: UsersIcon,
-    countTone: 'text-[var(--color-ink-950)]',
-    activeClass: 'bg-[var(--color-ink-950)] text-white shadow-[0_12px_30px_-18px_rgba(16,33,43,0.7)]',
-  },
-  care: {
-    label: 'Care',
-    icon: Shield,
-    countTone: 'text-[var(--color-ink-950)]',
-    activeClass: 'bg-white text-[var(--color-ink-950)] ring-1 ring-[var(--color-ink-950)] shadow-[0_10px_30px_-22px_rgba(16,33,43,0.6)]',
-  },
-  care_plus: {
-    label: 'Care+',
-    icon: Star,
-    countTone: 'text-[#2667ff]',
-    activeClass: 'bg-[#eff4ff] text-[#2667ff] ring-1 ring-[#c8d7ff] shadow-[0_10px_30px_-22px_rgba(38,103,255,0.4)]',
-  },
-  king: {
-    label: 'King',
-    icon: Crown,
-    countTone: 'text-[#b7791f]',
-    activeClass: 'bg-[#fff6e6] text-[#b7791f] ring-1 ring-[#f1d08a] shadow-[0_10px_30px_-22px_rgba(183,121,31,0.45)]',
-  },
+const LEVEL_META: Record<UserLevel | 'all', { label: string; icon: typeof UsersIcon }> = {
+  all: { label: '全部', icon: UsersIcon },
+  care: { label: 'Care', icon: Shield },
+  care_plus: { label: 'Care+', icon: Star },
+  king: { label: 'King', icon: Star },
 };
 
 function getSafeDate(value: string) {
@@ -99,23 +61,14 @@ function getQuotaDisplay(used: number, limit: number, extra: number, isUnlimited
   return `${used}/${limit + extra}`;
 }
 
-function getBaseQuotaDisplay(limit: number, isUnlimited: boolean) {
-  if (isUnlimited) {
-    return '无限';
-  }
-  return String(limit);
-}
-
-function getLevelBadge(level: UserLevel) {
-  if (level === 'king') {
-    return <span className="text-base font-bold text-[#b7791f]">King</span>;
-  }
-
+function getLevelText(level: UserLevel) {
   if (level === 'care_plus') {
-    return <span className="text-base font-bold text-[#2667ff]">Care+</span>;
+    return { label: 'Care+', className: 'text-blue-600' };
   }
-
-  return <span className="text-base font-bold text-[var(--color-ink-950)]">Care</span>;
+  if (level === 'king') {
+    return { label: 'King', className: 'text-amber-600' };
+  }
+  return { label: 'Care', className: 'text-zinc-800' };
 }
 
 function createDraft(user: User): UserConfigDraft {
@@ -141,6 +94,8 @@ export default function Users() {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [configDraft, setConfigDraft] = useState<UserConfigDraft | null>(null);
+
+  const deferredSearch = useDeferredValue(search);
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('adminToken');
@@ -174,8 +129,7 @@ export default function Users() {
 
     const data = await res.json();
     const nextGroups = Array.isArray(data.groups) ? data.groups.filter((item: unknown) => typeof item === 'string') : [];
-    const normalized = Array.from(new Set([DEFAULT_GROUP, ...nextGroups]));
-    setGroups(normalized);
+    setGroups(Array.from(new Set([DEFAULT_GROUP, ...nextGroups])));
   };
 
   const reloadPageData = async () => {
@@ -268,12 +222,7 @@ export default function Users() {
       setShowCreateGroup(false);
       setNewGroup('');
 
-      setConfigDraft((current) => {
-        if (!current) {
-          return current;
-        }
-        return { ...current, group };
-      });
+      setConfigDraft((current) => (current ? { ...current, group } : current));
     } catch (error) {
       console.error(error);
       alert('创建分组失败，请稍后重试。');
@@ -291,7 +240,7 @@ export default function Users() {
   }, [users]);
 
   const filteredUsers = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
+    const keyword = deferredSearch.trim().toLowerCase();
     return users.filter((user) => {
       const currentGroup = getDisplayGroup(user.group);
       const noteText = (user.note ?? '').toLowerCase();
@@ -304,7 +253,7 @@ export default function Users() {
       const matchGroup = filterGroup === 'all' || currentGroup === filterGroup;
       return matchSearch && matchLevel && matchGroup;
     });
-  }, [filterGroup, filterLevel, search, users]);
+  }, [deferredSearch, filterGroup, filterLevel, users]);
 
   const selectedUser = useMemo(
     () => users.find((user) => user.userId === selectedUserId) ?? null,
@@ -326,20 +275,17 @@ export default function Users() {
     setConfigDraft(null);
   };
 
-  const handleConfigDraftChange = (field: keyof UserConfigDraft, value: string) => {
+  const handleConfigDraftChange = <K extends keyof UserConfigDraft>(field: K, value: UserConfigDraft[K]) => {
     setConfigDraft((current) => {
       if (!current) {
         return current;
       }
 
-      if ((field === 'extraOcrQuota' || field === 'extraSummaryQuota') && value !== '' && !/^\d+$/.test(value)) {
+      if ((field === 'extraOcrQuota' || field === 'extraSummaryQuota') && value !== '' && !/^\d+$/.test(String(value))) {
         return current;
       }
 
-      return {
-        ...current,
-        [field]: value,
-      };
+      return { ...current, [field]: value };
     });
   };
 
@@ -375,252 +321,238 @@ export default function Users() {
   };
 
   if (loading) {
-    return <div className="p-10 text-center text-sm text-[var(--color-ink-700)]">正在加载用户数据...</div>;
+    return <div className="p-10 text-center text-sm text-zinc-500">正在加载用户数据...</div>;
   }
 
   return (
     <>
-      <div className="space-y-6">
-        <section className="rounded-[34px] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,248,246,0.98))] px-5 py-6 shadow-[0_30px_80px_-48px_rgba(16,33,43,0.4)] sm:px-8 sm:py-8">
-          <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <h2 className="text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)] sm:text-4xl">用户管理</h2>
-                <p className="mt-3 text-sm leading-7 text-[var(--color-ink-700)]">
-                  共 {users.length} 个用户，当前显示 {filteredUsers.length} 个。这里可以按等级和分组筛选，并进入配置弹窗补充额度、修改备注和调整等级。
-                </p>
-              </div>
+      <div className="flex flex-col gap-6 animate-in fade-in duration-300">
+        <div className="rounded-[32px] bg-white/38 px-4 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:px-6 sm:py-6">
+          <div className="flex flex-wrap items-end justify-between gap-4 px-2">
+            <div>
+              <h2 className="mb-2 text-[28px] font-semibold tracking-tight text-zinc-900">用户管理</h2>
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {(['all', 'care', 'care_plus'] as const).map((key, index) => {
+                  const meta = LEVEL_META[key];
+                  const Icon = meta.icon;
+                  const isActive = filterLevel === key;
+                  const activeClass =
+                    index === 0
+                      ? 'bg-zinc-900/90 text-white'
+                      : 'bg-white/60 text-zinc-800 ring-1 ring-white/80 hover:bg-white/80';
 
-              <button
-                onClick={reloadPageData}
-                className="inline-flex items-center justify-center gap-2 self-start rounded-full border border-white bg-white px-5 py-3 text-sm font-semibold text-[var(--color-ink-900)] shadow-[0_14px_34px_-24px_rgba(16,33,43,0.45)] transition hover:-translate-y-0.5 hover:shadow-[0_20px_40px_-24px_rgba(16,33,43,0.5)]"
-              >
-                <RefreshCw size={16} />
-                刷新
-              </button>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              {(['all', 'care', 'care_plus', 'king'] as const).map((key) => {
-                const meta = LEVEL_META[key];
-                const Icon = meta.icon;
-                const isActive = filterLevel === key;
-                const count = levelStats[key];
-
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setFilterLevel(key)}
-                    className={[
-                      'inline-flex items-center gap-3 rounded-full px-5 py-3 text-sm font-semibold transition',
-                      isActive ? meta.activeClass : 'bg-white text-[var(--color-ink-700)] shadow-[0_10px_30px_-24px_rgba(16,33,43,0.5)] hover:-translate-y-0.5 hover:text-[var(--color-ink-950)]',
-                    ].join(' ')}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <Icon size={16} />
-                      <span>{meta.label}</span>
-                    </span>
-                    <span className={['text-2xl font-extrabold leading-none', isActive ? 'text-current' : meta.countTone].join(' ')}>{count}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px_auto]">
-              <label className="relative block">
-                <Search className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-[var(--color-ink-500)]" size={18} />
-                <input
-                  type="text"
-                  placeholder="搜索 ID、备注..."
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  className="w-full rounded-full border border-transparent bg-white px-14 py-4 text-sm text-[var(--color-ink-900)] outline-none shadow-[inset_0_0_0_1px_rgba(219,228,232,0.9)] transition focus:shadow-[inset_0_0_0_1px_rgba(47,127,121,0.65),0_0_0_6px_rgba(47,127,121,0.08)]"
-                />
-              </label>
-
-              <div className="relative">
-                <select
-                  value={filterGroup}
-                  onChange={(event) => setFilterGroup(event.target.value)}
-                  className="w-full appearance-none rounded-full border border-transparent bg-white px-5 py-4 text-sm text-[var(--color-ink-900)] outline-none shadow-[inset_0_0_0_1px_rgba(219,228,232,0.9)] transition focus:shadow-[inset_0_0_0_1px_rgba(47,127,121,0.65),0_0_0_6px_rgba(47,127,121,0.08)]"
-                >
-                  <option value="all">全部分组</option>
-                  {groups.map((group) => (
-                    <option key={group} value={group}>
-                      {group}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
-                {showCreateGroup && (
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newGroup}
-                      onChange={(event) => setNewGroup(event.target.value)}
-                      placeholder="输入新分组"
-                      className="min-w-0 flex-1 rounded-full border border-transparent bg-white px-5 py-4 text-sm text-[var(--color-ink-900)] outline-none shadow-[inset_0_0_0_1px_rgba(219,228,232,0.9)] transition focus:shadow-[inset_0_0_0_1px_rgba(47,127,121,0.65),0_0_0_6px_rgba(47,127,121,0.08)]"
-                    />
+                  return (
                     <button
-                      onClick={handleCreateGroup}
-                      disabled={creatingGroup}
-                      className="rounded-full bg-white px-5 py-4 text-sm font-semibold text-[var(--color-ink-950)] shadow-[0_14px_34px_-24px_rgba(16,33,43,0.45)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                      key={key}
+                      onClick={() => setFilterLevel(key)}
+                      className={`flex items-center gap-2 rounded-full px-4 py-2 shadow-sm transition-all ${isActive ? activeClass : 'bg-white/40 text-zinc-600 ring-1 ring-white/60 hover:bg-white/80'}`}
                     >
-                      {creatingGroup ? '创建中...' : '保存'}
+                      <Icon size={14} className={isActive && index === 0 ? 'text-zinc-400' : 'text-zinc-500'} />
+                      <span className={`text-[13px] font-medium ${isActive && index === 0 ? 'text-zinc-300' : ''}`}>{meta.label}</span>
+                      <span className="ml-1 text-[15px] font-semibold">{levelStats[key]}</span>
                     </button>
-                  </div>
-                )}
-
+                  );
+                })}
                 <button
-                  onClick={() => setShowCreateGroup((current) => !current)}
-                  className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-ink-950)] px-6 py-4 text-sm font-semibold text-white shadow-[0_18px_36px_-24px_rgba(16,33,43,0.8)] transition hover:-translate-y-0.5"
+                  onClick={() => setFilterLevel('king')}
+                  className={`flex items-center gap-2 rounded-full px-4 py-2 shadow-sm transition-all ${
+                    filterLevel === 'king'
+                      ? 'bg-white/60 text-amber-600 ring-1 ring-amber-100'
+                      : 'bg-white/40 text-zinc-600 ring-1 ring-white/60 hover:bg-white/80'
+                  }`}
                 >
-                  <FolderPlus size={16} />
-                  新建分组
+                  <Star size={14} className="text-amber-500" />
+                  <span className="text-[13px] font-medium">King</span>
+                  <span className="ml-1 text-[15px] font-semibold">{levelStats.king}</span>
                 </button>
               </div>
             </div>
-          </div>
-        </section>
 
-        <section className="rounded-[34px] bg-[rgba(255,255,255,0.72)] px-3 py-3 sm:px-4 sm:py-4">
-          <div className="hidden grid-cols-[2.1fr_1fr_1fr_1.6fr_1.6fr_1.1fr_1.8fr_0.9fr] gap-4 px-6 py-4 text-sm font-medium text-[var(--color-ink-500)] lg:grid">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative w-64">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={15} />
+                <input
+                  type="text"
+                  placeholder="搜索 ID..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  className="w-full rounded-full border-transparent bg-white/60 py-2.5 pl-10 pr-4 text-[14px] shadow-sm ring-1 ring-white/80 transition-all focus:bg-white focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                />
+              </div>
+
+              <select
+                value={filterGroup}
+                onChange={(event) => setFilterGroup(event.target.value)}
+                className="rounded-full border-transparent bg-white/60 px-4 py-2.5 text-[14px] text-zinc-700 shadow-sm ring-1 ring-white/80 outline-none transition-all focus:bg-white focus:ring-2 focus:ring-zinc-300"
+              >
+                <option value="all">全部分组</option>
+                {groups.map((group) => (
+                  <option key={group} value={group}>
+                    {group}
+                  </option>
+                ))}
+              </select>
+
+              {showCreateGroup ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newGroup}
+                    onChange={(event) => setNewGroup(event.target.value)}
+                    placeholder="输入分组"
+                    className="rounded-full border-transparent bg-white/70 px-4 py-2.5 text-[14px] shadow-sm ring-1 ring-white/80 outline-none transition-all focus:bg-white focus:ring-2 focus:ring-zinc-300"
+                  />
+                  <button
+                    onClick={handleCreateGroup}
+                    disabled={creatingGroup}
+                    className="rounded-full bg-white/80 px-4 py-2.5 text-[14px] font-medium text-zinc-800 shadow-sm ring-1 ring-zinc-200/50 transition-all disabled:opacity-50"
+                  >
+                    {creatingGroup ? '保存中...' : '保存'}
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                onClick={() => setShowCreateGroup((current) => !current)}
+                className="flex items-center gap-2 rounded-full bg-zinc-900 px-5 py-2.5 text-[14px] font-medium text-white shadow-md transition-all active:scale-95 hover:bg-black"
+              >
+                <FolderPlus size={15} />
+                新建分组
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[32px] bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:p-6">
+          <div className="hidden grid-cols-[1.5fr_auto_auto_1.2fr_1fr_1fr_1.5fr_auto] gap-x-6 items-center px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">
             <div>用户 ID</div>
-            <div>分组</div>
-            <div>等级</div>
+            <div className="w-16">分组</div>
+            <div className="w-20">等级</div>
             <div>基础额度</div>
             <div>额外额度</div>
             <div>累计使用</div>
             <div>加入时间 / 备注</div>
-            <div className="text-right">操作</div>
+            <div className="w-16 text-right">操作</div>
           </div>
 
-          <div className="space-y-4">
-            {filteredUsers.map((user) => {
-              const currentGroup = getDisplayGroup(user.group);
+          {filteredUsers.length === 0 ? (
+            <div className="rounded-[24px] border border-dashed border-zinc-200 bg-white/30 py-16 text-center text-[15px] text-zinc-500">
+              没有找到匹配的用户
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredUsers.map((user) => {
+                const level = getLevelText(user.level);
+                const displayGroup = getDisplayGroup(user.group);
 
-              return (
-                <article
-                  key={user.userId}
-                  className="rounded-[30px] bg-white px-5 py-5 shadow-[0_20px_50px_-40px_rgba(16,33,43,0.5)] transition hover:-translate-y-0.5 hover:shadow-[0_28px_60px_-42px_rgba(16,33,43,0.55)] sm:px-6"
-                >
-                  <div className="grid gap-5 lg:grid-cols-[2.1fr_1fr_1fr_1.6fr_1.6fr_1.1fr_1.8fr_0.9fr] lg:items-center">
-                    <div>
-                      <div className="truncate font-mono text-base text-[var(--color-ink-900)]" title={user.userId}>
-                        {user.userId}
-                      </div>
-                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--color-ink-500)] lg:hidden">
-                        <span>{formatJoinDate(user.firstUsedAt)}</span>
-                        <span className="h-1 w-1 rounded-full bg-[var(--color-ink-200)]" />
-                        <span>{currentGroup}</span>
-                      </div>
+                return (
+                  <div
+                    key={user.userId}
+                    className="grid gap-y-3 rounded-[24px] bg-white/50 px-6 py-5 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ring-1 ring-white/80 backdrop-blur-2xl transition-all duration-300 hover:bg-white/70 xl:grid-cols-[1.5fr_auto_auto_1.2fr_1fr_1fr_1.5fr_auto] xl:items-center xl:gap-x-6"
+                  >
+                    <div className="truncate pr-2 font-mono text-[13px] font-medium text-zinc-800" title={user.userId}>
+                      {user.userId}
                     </div>
 
-                    <div>
-                      <span className="inline-flex rounded-2xl bg-[var(--color-ink-100)] px-4 py-2 text-sm text-[var(--color-ink-800)]">
-                        {currentGroup}
+                    <div className="w-16">
+                      <span className="inline-flex items-center justify-center rounded-[6px] bg-zinc-400/15 px-2.5 py-1 text-[12px] font-medium tracking-wide text-zinc-700">
+                        {displayGroup}
                       </span>
                     </div>
 
-                    <div>{getLevelBadge(user.level)}</div>
-
-                    <div className="space-y-1 text-sm text-[var(--color-ink-500)]">
-                      <div className="flex items-baseline gap-3">
-                        <span>OCR</span>
-                        <span className="text-[28px] font-bold leading-none text-[var(--color-ink-900)]">{getQuotaDisplay(user.ocrUsed, user.ocrLimit, user.extraOcrQuota || 0, user.isUnlimited)}</span>
-                      </div>
-                      <div className="flex items-baseline gap-3">
-                        <span>小结</span>
-                        <span className="text-[28px] font-bold leading-none text-[var(--color-ink-900)]">{getQuotaDisplay(user.summaryUsed, user.summaryLimit, user.extraSummaryQuota || 0, user.isUnlimited)}</span>
-                      </div>
+                    <div className="w-20">
+                      <span className={`text-[14px] font-bold tracking-tight ${level.className}`}>{level.label}</span>
                     </div>
 
-                    <div className="space-y-1 text-sm text-[var(--color-ink-500)]">
+                    <div className="flex flex-col gap-1.5 text-[13px]">
                       <div className="flex items-center gap-3">
-                        <span>OCR</span>
-                        <span className="text-xl font-semibold text-emerald-600">+{user.extraOcrQuota || 0}</span>
+                        <span className="w-8 font-medium text-zinc-400">OCR</span>
+                        <span className="font-semibold text-zinc-800">
+                          {getQuotaDisplay(user.ocrUsed, user.ocrLimit, user.extraOcrQuota || 0, user.isUnlimited)}
+                        </span>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span>小结</span>
-                        <span className="text-xl font-semibold text-[#2667ff]">+{user.extraSummaryQuota || 0}</span>
+                        <span className="w-8 font-medium text-zinc-400">小结</span>
+                        <span className="font-semibold text-zinc-800">
+                          {getQuotaDisplay(user.summaryUsed, user.summaryLimit, user.extraSummaryQuota || 0, user.isUnlimited)}
+                        </span>
                       </div>
                     </div>
 
-                    <div className="text-[28px] font-semibold leading-none text-[var(--color-ink-900)]">
-                      {user.ocrUsed}
-                      <span className="px-3 text-[var(--color-ink-200)]">|</span>
-                      {user.summaryUsed}
+                    <div className="flex flex-col gap-1.5 text-[13px] font-medium">
+                      <div className="flex items-center gap-3">
+                        <span className="w-8 text-zinc-400">OCR</span>
+                        <span className="text-emerald-600">+{user.extraOcrQuota || 0}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="w-8 text-zinc-400">小结</span>
+                        <span className="text-blue-600">+{user.extraSummaryQuota || 0}</span>
+                      </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <div className="text-sm text-[var(--color-ink-500)]">{formatJoinDate(user.firstUsedAt)}</div>
-                      <div className="line-clamp-2 text-sm text-[var(--color-ink-800)]">{(user.note ?? '').trim() || '未添加备注'}</div>
+                    <div className="flex flex-col justify-center">
+                      <div className="flex items-center gap-2 text-[14px] font-medium text-zinc-700">
+                        <span>{user.ocrUsed + user.summaryUsed}</span>
+                        <span className="font-light text-zinc-300">|</span>
+                        <span>{user.totalUsedCount}</span>
+                      </div>
                     </div>
 
-                    <div className="flex justify-end">
+                    <div className="flex flex-col gap-1 pr-2">
+                      <span className="text-[12px] font-medium text-zinc-400">{formatJoinDate(user.firstUsedAt)}</span>
+                      <span className="truncate text-[13px] font-medium text-zinc-700" title={user.note}>
+                        {user.note || '未添加备注'}
+                      </span>
+                    </div>
+
+                    <div className="w-16 text-right">
                       <button
                         onClick={() => openConfigModal(user)}
-                        className="rounded-full border border-[var(--color-ink-200)] bg-white px-6 py-3 text-sm font-semibold text-[var(--color-ink-900)] shadow-[0_12px_30px_-24px_rgba(16,33,43,0.38)] transition hover:-translate-y-0.5 hover:border-[var(--color-ink-400)]"
+                        className="inline-flex w-full items-center justify-center rounded-full bg-white/80 py-2 text-[13px] font-medium text-zinc-800 shadow-sm ring-1 ring-zinc-200/50 transition-all active:scale-95 hover:bg-zinc-100 hover:ring-zinc-300"
                       >
                         配置
                       </button>
                     </div>
                   </div>
-                </article>
-              );
-            })}
-
-            {filteredUsers.length === 0 && (
-              <div className="rounded-[30px] bg-white px-6 py-16 text-center shadow-[0_20px_50px_-40px_rgba(16,33,43,0.5)]">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-ink-100)] text-[var(--color-ink-500)]">
-                    <UsersIcon size={30} />
-                  </div>
-                  <div>
-                    <div className="text-lg font-semibold text-[var(--color-ink-900)]">没有找到匹配的用户</div>
-                    <div className="mt-2 text-sm text-[var(--color-ink-600)]">可以试试切换等级筛选、分组，或者缩短搜索关键词。</div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
-      {selectedUser && configDraft && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(16,33,43,0.18)] px-4 py-6 backdrop-blur-[6px]">
-          <div className="relative w-full max-w-[560px] overflow-hidden rounded-[40px] bg-[linear-gradient(180deg,#ffffff_0%,#fafaf9_100%)] px-6 py-8 shadow-[0_40px_100px_-36px_rgba(16,33,43,0.6)] sm:px-8">
+      {selectedUser && configDraft ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+          <div onClick={closeConfigModal} className="absolute inset-0 bg-zinc-900/30 backdrop-blur-xl transition-opacity duration-300" />
+
+          <div className="relative w-full max-w-[360px] overflow-hidden rounded-[36px] bg-white/85 shadow-[0_40px_80px_-20px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-3xl">
             <button
               onClick={closeConfigModal}
               disabled={selectedUserSaving}
-              className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-ink-100)] text-[var(--color-ink-700)] transition hover:bg-[var(--color-ink-200)] disabled:cursor-not-allowed disabled:opacity-60"
+              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-50"
               aria-label="关闭"
             >
-              <X size={18} />
+              <X size={16} />
             </button>
 
-            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border border-[rgba(16,33,43,0.06)] bg-white text-[38px] font-semibold text-[var(--color-ink-900)] shadow-[0_16px_34px_-28px_rgba(16,33,43,0.55)]">
-              {selectedUser.userId.slice(0, 1).toUpperCase()}
-            </div>
-
-            <div className="mt-5 text-center">
-              <div className="mx-auto max-w-[320px] truncate text-[28px] font-extrabold leading-tight text-[var(--color-ink-950)]" title={selectedUser.userId}>
-                {selectedUser.userId}
+            <div className="p-6">
+              <div className="mt-4 mb-6 flex flex-col items-center text-center">
+                <div className="mb-4 flex h-[72px] w-[72px] items-center justify-center rounded-full bg-zinc-100 text-3xl font-medium text-zinc-800 shadow-sm">
+                  {selectedUser.userId.charAt(0).toUpperCase()}
+                </div>
+                <h3 className="mb-1.5 text-[22px] font-semibold leading-none tracking-tight text-zinc-900">
+                  {selectedUser.userId.length > 12 ? `${selectedUser.userId.substring(0, 12)}...` : selectedUser.userId}
+                </h3>
+                <p className="text-[14px] font-medium text-zinc-400">用户配置</p>
               </div>
-              <p className="mt-2 text-sm text-[var(--color-ink-500)]">用户配置</p>
-            </div>
 
-            <div className="mt-8 space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-[var(--color-ink-600)]">用户分组</span>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
                   <select
                     value={configDraft.group}
                     onChange={(event) => handleConfigDraftChange('group', event.target.value)}
                     disabled={selectedUserSaving}
-                    className="w-full appearance-none rounded-[22px] border border-[var(--color-ink-200)] bg-white px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.08)]"
+                    className="rounded-[16px] bg-zinc-100/60 px-4 py-3 text-[14px] font-medium text-zinc-800 outline-none transition focus:bg-white focus:ring-2 focus:ring-zinc-300"
                   >
                     {groups.map((group) => (
                       <option key={group} value={group}>
@@ -628,104 +560,97 @@ export default function Users() {
                       </option>
                     ))}
                   </select>
-                </label>
 
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-[var(--color-ink-600)]">用户等级</span>
                   <select
                     value={configDraft.level}
-                    onChange={(event) => handleConfigDraftChange('level', event.target.value)}
+                    onChange={(event) => handleConfigDraftChange('level', event.target.value as UserLevel)}
                     disabled={selectedUserSaving}
-                    className="w-full appearance-none rounded-[22px] border border-[var(--color-ink-200)] bg-white px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.08)]"
+                    className="rounded-[16px] bg-zinc-100/60 px-4 py-3 text-[14px] font-medium text-zinc-800 outline-none transition focus:bg-white focus:ring-2 focus:ring-zinc-300"
                   >
                     <option value="care">Care</option>
                     <option value="care_plus">Care+</option>
                     <option value="king">King</option>
                   </select>
-                </label>
-              </div>
+                </div>
 
-              <div className="space-y-5">
-                <div className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-[rgba(16,33,43,0.08)] pb-5">
-                  <div>
-                    <div className="text-[18px] font-semibold text-[var(--color-ink-950)]">OCR 补充</div>
-                    <div className="mt-1 text-[30px] font-bold leading-none text-[var(--color-ink-500)]">
-                      {getQuotaDisplay(selectedUser.ocrUsed, selectedUser.ocrLimit, selectedUser.extraOcrQuota || 0, selectedUser.isUnlimited)}
+                <div className="overflow-hidden rounded-[24px] bg-zinc-100/60">
+                  <div className="group flex items-center justify-between px-5 py-4 transition-colors hover:bg-zinc-200/40">
+                    <div className="flex flex-col">
+                      <span className="text-[16px] font-medium leading-snug text-zinc-900">OCR 补充</span>
+                      <span className="mt-0.5 text-[13px] font-normal text-zinc-400">
+                        {getQuotaDisplay(selectedUser.ocrUsed, selectedUser.ocrLimit, selectedUser.extraOcrQuota || 0, selectedUser.isUnlimited)}
+                      </span>
                     </div>
-                    <div className="mt-2 text-sm text-[var(--color-ink-500)]">基础额度 {getBaseQuotaDisplay(selectedUser.ocrLimit, selectedUser.isUnlimited)}</div>
+                    <div className="flex items-center gap-1 rounded-[14px] bg-white/70 px-2.5 py-1 shadow-sm transition-colors group-hover:bg-white">
+                      <span className="text-[18px] font-light leading-none text-zinc-400">+</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={configDraft.extraOcrQuota}
+                        onChange={(event) => handleConfigDraftChange('extraOcrQuota', event.target.value)}
+                        placeholder="0"
+                        disabled={selectedUserSaving}
+                        className="w-[48px] bg-transparent p-0 text-center text-[18px] font-semibold text-zinc-900 outline-none"
+                      />
+                    </div>
                   </div>
 
-                  <div className="flex items-center rounded-full border border-[var(--color-ink-200)] bg-white px-4 py-2 shadow-[0_14px_30px_-26px_rgba(16,33,43,0.45)]">
-                    <Plus size={16} className="text-[var(--color-ink-500)]" />
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={configDraft.extraOcrQuota}
-                      onChange={(event) => handleConfigDraftChange('extraOcrQuota', event.target.value)}
-                      placeholder="0"
-                      disabled={selectedUserSaving}
-                      className="w-20 border-0 bg-transparent px-3 text-center text-[20px] font-bold text-[var(--color-ink-600)] outline-none"
-                    />
+                  <div className="ml-5 h-px bg-zinc-200/50" />
+
+                  <div className="group flex items-center justify-between px-5 py-4 transition-colors hover:bg-zinc-200/40">
+                    <div className="flex flex-col">
+                      <span className="text-[16px] font-medium leading-snug text-zinc-900">小结补充</span>
+                      <span className="mt-0.5 text-[13px] font-normal text-zinc-400">
+                        {getQuotaDisplay(selectedUser.summaryUsed, selectedUser.summaryLimit, selectedUser.extraSummaryQuota || 0, selectedUser.isUnlimited)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 rounded-[14px] bg-white/70 px-2.5 py-1 shadow-sm transition-colors group-hover:bg-white">
+                      <span className="text-[18px] font-light leading-none text-zinc-400">+</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={configDraft.extraSummaryQuota}
+                        onChange={(event) => handleConfigDraftChange('extraSummaryQuota', event.target.value)}
+                        placeholder="0"
+                        disabled={selectedUserSaving}
+                        className="w-[48px] bg-transparent p-0 text-center text-[18px] font-semibold text-zinc-900 outline-none"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-[1fr_auto] items-center gap-4 pb-2">
-                  <div>
-                    <div className="text-[18px] font-semibold text-[var(--color-ink-950)]">小结补充</div>
-                    <div className="mt-1 text-[30px] font-bold leading-none text-[var(--color-ink-500)]">
-                      {getQuotaDisplay(selectedUser.summaryUsed, selectedUser.summaryLimit, selectedUser.extraSummaryQuota || 0, selectedUser.isUnlimited)}
-                    </div>
-                    <div className="mt-2 text-sm text-[var(--color-ink-500)]">基础额度 {getBaseQuotaDisplay(selectedUser.summaryLimit, selectedUser.isUnlimited)}</div>
-                  </div>
-
-                  <div className="flex items-center rounded-full border border-[var(--color-ink-200)] bg-white px-4 py-2 shadow-[0_14px_30px_-26px_rgba(16,33,43,0.45)]">
-                    <Plus size={16} className="text-[var(--color-ink-500)]" />
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={configDraft.extraSummaryQuota}
-                      onChange={(event) => handleConfigDraftChange('extraSummaryQuota', event.target.value)}
-                      placeholder="0"
-                      disabled={selectedUserSaving}
-                      className="w-20 border-0 bg-transparent px-3 text-center text-[20px] font-bold text-[var(--color-ink-600)] outline-none"
-                    />
-                  </div>
+                <div className="rounded-[20px] bg-zinc-100/60 px-5 py-4 transition-colors focus-within:bg-zinc-200/60">
+                  <input
+                    type="text"
+                    value={configDraft.note}
+                    onChange={(event) => handleConfigDraftChange('note', event.target.value)}
+                    placeholder="添加备注"
+                    disabled={selectedUserSaving}
+                    className="w-full bg-transparent p-0 text-[16px] font-medium text-zinc-900 outline-none placeholder:text-zinc-400"
+                  />
                 </div>
               </div>
-
-              <label className="block">
-                <span className="sr-only">添加备注</span>
-                <textarea
-                  value={configDraft.note}
-                  onChange={(event) => handleConfigDraftChange('note', event.target.value)}
-                  placeholder="添加备注"
-                  disabled={selectedUserSaving}
-                  rows={4}
-                  className="w-full resize-none rounded-[26px] border border-transparent bg-[rgba(247,250,251,0.95)] px-5 py-4 text-sm text-[var(--color-ink-900)] outline-none shadow-[inset_0_0_0_1px_rgba(219,228,232,0.95)] transition placeholder:text-[var(--color-ink-500)] focus:shadow-[inset_0_0_0_1px_rgba(47,127,121,0.65),0_0_0_6px_rgba(47,127,121,0.08)]"
-                />
-              </label>
             </div>
 
-            <div className="mt-8 space-y-4">
+            <div className="flex flex-col gap-2 p-6 pt-2">
               <button
                 onClick={handleSaveConfig}
                 disabled={selectedUserSaving}
-                className="w-full rounded-full bg-[var(--color-ink-950)] py-4 text-lg font-semibold text-white shadow-[0_22px_40px_-24px_rgba(16,33,43,0.85)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-full bg-zinc-900 py-4 text-[16px] font-semibold text-white transition-all active:scale-[0.98] hover:bg-black disabled:opacity-50"
               >
                 {selectedUserSaving ? '保存中...' : '完成'}
               </button>
-
               <button
                 onClick={closeConfigModal}
                 disabled={selectedUserSaving}
-                className="w-full bg-transparent py-2 text-lg text-[var(--color-ink-600)] transition hover:text-[var(--color-ink-900)] disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full rounded-full py-3 text-[16px] font-medium text-zinc-500 transition-colors hover:text-zinc-800"
               >
                 取消
               </button>
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </>
   );
 }

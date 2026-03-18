@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
-import { Activity, BarChart3, Calendar, RefreshCw, Trash2, Users } from 'lucide-react';
+import { Activity, BarChart3, Calendar, FileText, RefreshCw, Trash2, Users } from 'lucide-react';
 
 interface UsageStats {
   totalCalls: number;
@@ -28,11 +28,42 @@ const defaultStats: UsageStats = {
 };
 
 const statCards = [
-  { key: 'totalCalls', label: '总调用次数', icon: BarChart3, tone: 'bg-[var(--color-brand-50)] text-[var(--color-brand-700)]' },
-  { key: 'todayCalls', label: '今日调用', icon: Activity, tone: 'bg-emerald-50 text-emerald-700' },
-  { key: 'monthCalls', label: '本月调用', icon: Calendar, tone: 'bg-sky-50 text-sky-700' },
-  { key: 'totalUsers', label: '总用户数', icon: Users, tone: 'bg-[var(--color-accent-50)] text-amber-700' },
+  { key: 'totalCalls', label: '总调用次数', icon: BarChart3 },
+  { key: 'todayCalls', label: '今日调用', icon: Activity },
+  { key: 'monthCalls', label: '本月调用', icon: Calendar },
+  { key: 'totalUsers', label: '总用户数', icon: Users },
 ] as const;
+
+function getFeatureMeta(feature: UsageLog['feature']) {
+  if (feature === 'ocr') {
+    return {
+      label: '智能 OCR',
+      className: 'bg-emerald-50/80 text-emerald-600 ring-1 ring-emerald-100/50',
+    };
+  }
+
+  return {
+    label: '智能小结',
+    className: 'bg-amber-50/80 text-amber-700 ring-1 ring-amber-100/50',
+  };
+}
+
+function getSafeDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getDateParts(value: string) {
+  const date = getSafeDate(value);
+  if (!date) {
+    return { day: '--', time: '--' };
+  }
+
+  return {
+    day: format(date, 'yyyy-MM-dd'),
+    time: format(date, 'HH:mm:ss'),
+  };
+}
 
 export default function Logs() {
   const [logs, setLogs] = useState<UsageLog[]>([]);
@@ -103,115 +134,135 @@ export default function Logs() {
   }, []);
 
   if (loading) {
-    return <div className="p-10 text-center text-sm text-[var(--color-ink-700)]">正在加载数据...</div>;
+    return <div className="p-10 text-center text-sm text-zinc-500">正在加载数据...</div>;
   }
 
   return (
-    <div className="space-y-6">
-      <section className="flex flex-col gap-4 rounded-[28px] bg-[linear-gradient(135deg,rgba(47,127,121,0.12),rgba(255,248,236,0.78))] p-6 sm:flex-row sm:items-end sm:justify-between">
-        <div className="max-w-2xl">
-          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-brand-700)]">Logs Overview</div>
-          <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)]">使用记录</h2>
-          <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">集中查看调用统计、用户来源和每次功能使用情况，便于追踪问题和运营分析。</p>
-        </div>
-        <button
-          onClick={fetchLogsAndStats}
-          className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/80 bg-white/90 px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-900)] transition hover:bg-white"
-        >
-          <RefreshCw size={16} />
-          刷新数据
-        </button>
-      </section>
+    <div className="flex flex-col gap-6 animate-in fade-in duration-300">
+      <div className="rounded-[32px] bg-white/38 px-4 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:px-6 sm:py-6">
+        <div className="flex flex-wrap items-end justify-between gap-4 px-2">
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.24em] text-zinc-400">
+              <FileText size={13} />
+              Logs Overview
+            </div>
+            <h2 className="mb-2 text-[28px] font-semibold tracking-tight text-zinc-900 sm:text-[30px]">使用记录</h2>
+            <p className="text-[13px] font-medium text-zinc-500">
+              统一查看调用统计、IP 来源、功能使用情况和删除操作。
+            </p>
+          </div>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {statCards.map((card) => {
-          const Icon = card.icon;
-          const value = stats[card.key];
-          return (
-            <article
-              key={card.key}
-              className="rounded-[28px] border border-[var(--color-ink-200)] bg-white px-5 py-5 shadow-[0_18px_50px_-36px_rgba(16,33,43,0.32)]"
-            >
-              <div className="flex items-center gap-4">
-                <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ${card.tone}`}>
-                  <Icon size={24} />
+          <button
+            onClick={fetchLogsAndStats}
+            className="flex items-center gap-2 rounded-full bg-zinc-900 px-5 py-3 text-[14px] font-medium text-white shadow-md transition-all active:scale-95 hover:bg-black"
+          >
+            <RefreshCw size={15} />
+            刷新数据
+          </button>
+        </div>
+
+        <div className="mt-6 grid gap-4 xl:grid-cols-4">
+          {statCards.map((stat, index) => {
+            const Icon = stat.icon;
+            const value = stats[stat.key];
+            const cardClass = 'bg-white/45 text-zinc-900';
+            const iconClass = index === 0 ? 'bg-zinc-100/80 text-zinc-500' : 'bg-zinc-100/80 text-zinc-500';
+            const labelClass = 'text-zinc-500';
+            const noteClass = 'text-zinc-400';
+
+            return (
+              <div
+                key={stat.key}
+                className={`rounded-[24px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] ring-1 ring-white/80 backdrop-blur-2xl ${cardClass}`}
+              >
+                <div className="mb-3 flex items-start justify-between">
+                  <span className={`text-[13px] font-medium ${labelClass}`}>{stat.label}</span>
+                  <div className={`flex h-14 w-14 items-center justify-center rounded-[18px] ${iconClass}`}>
+                    <Icon size={20} />
+                  </div>
                 </div>
-                <div>
-                  <div className="text-sm font-medium text-[var(--color-ink-700)]">{card.label}</div>
-                  <div className="mt-1 text-3xl font-extrabold text-[var(--color-ink-950)]">{value}</div>
+                <div className="text-[32px] font-semibold leading-none tracking-tight">{value}</div>
+                <div className={`mt-3 text-[12px] font-medium ${noteClass}`}>
+                  {index === 0 ? '累计功能调用' : index === 1 ? '当天请求波动' : index === 2 ? '月度累计趋势' : '活跃用户覆盖'}
                 </div>
               </div>
-            </article>
-          );
-        })}
-      </section>
+            );
+          })}
+        </div>
+      </div>
 
-      <section className="overflow-hidden rounded-[30px] border border-[var(--color-ink-200)] bg-white shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
-        <div className="border-b border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-6 py-4">
-          <h3 className="text-lg font-bold text-[var(--color-ink-950)]">最近日志</h3>
-          <p className="mt-1 text-sm text-[var(--color-ink-700)]">默认展示最近 100 条记录。</p>
+      <div className="rounded-[32px] bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] ring-1 ring-white/65 backdrop-blur-sm sm:p-6">
+        <div className="px-2 mb-4">
+          <h3 className="text-[18px] font-semibold text-zinc-800">最近日志</h3>
+          <p className="text-[13px] text-zinc-400">默认展示最近 100 条记录，删除操作仍然直接调用原来的后台接口。</p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left">
-            <thead className="bg-white text-sm text-[var(--color-ink-700)]">
-              <tr className="border-b border-[var(--color-ink-200)]">
-                <th className="px-6 py-4 font-semibold">时间</th>
-                <th className="px-6 py-4 font-semibold">用户信息</th>
-                <th className="px-6 py-4 font-semibold">IP 归属地</th>
-                <th className="px-6 py-4 font-semibold">功能</th>
-                <th className="px-6 py-4 font-semibold">本月次数</th>
-                <th className="px-6 py-4 font-semibold">该功能累计</th>
-                <th className="px-6 py-4 font-semibold text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--color-ink-100)] text-sm text-[var(--color-ink-900)]">
-              {logs.map((log) => (
-                <tr key={log.id} className="transition hover:bg-[var(--color-brand-50)]/50">
-                  <td className="whitespace-nowrap px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(log.usedAt), 'yyyy-MM-dd HH:mm:ss')}</td>
-                  <td className="px-6 py-4">
-                    <div className="max-w-[220px] truncate font-semibold text-[var(--color-ink-950)]" title={log.userId}>
+        <div className="hidden grid-cols-[90px_minmax(0,1fr)_120px_100px_80px_80px_80px] gap-x-6 items-center px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">
+          <div>时间</div>
+          <div>用户信息</div>
+          <div>IP 归属地</div>
+          <div>功能</div>
+          <div>本月次数</div>
+          <div>功能累计</div>
+          <div className="text-right">操作</div>
+        </div>
+
+        {logs.length === 0 ? (
+          <div className="rounded-[24px] border border-dashed border-zinc-200 bg-white/30 py-16 text-center text-[15px] text-zinc-500">
+            暂无使用记录
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {logs.map((log) => {
+              const date = getDateParts(log.usedAt);
+              const feature = getFeatureMeta(log.feature);
+
+              return (
+                <div
+                  key={log.id}
+                  className="grid gap-y-3 rounded-[24px] bg-white/50 px-6 py-5 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.05)] ring-1 ring-white/80 backdrop-blur-2xl transition-all duration-300 hover:bg-white/70 xl:grid-cols-[90px_minmax(0,1fr)_120px_100px_80px_80px_80px] xl:items-center xl:gap-x-6"
+                >
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[12px] font-semibold tracking-tight text-zinc-800">{date.day}</span>
+                    <span className="font-mono text-[11px] text-zinc-400">{date.time}</span>
+                  </div>
+
+                  <div className="min-w-0 pr-4">
+                    <div className="truncate font-mono text-[13px] text-zinc-800" title={log.userId}>
                       {log.userId}
                     </div>
-                    <div className="mt-1 text-xs text-[var(--color-ink-600)]">{log.ip || 'unknown'}</div>
-                  </td>
-                  <td className="px-6 py-4 text-[var(--color-ink-700)]">{log.ipLocation || '未知'}</td>
-                  <td className="px-6 py-4">
-                    <span
-                      className={[
-                        'inline-flex rounded-full px-3 py-1 text-xs font-semibold',
-                        log.feature === 'ocr' ? 'bg-[var(--color-brand-50)] text-[var(--color-brand-700)]' : 'bg-emerald-50 text-emerald-700',
-                      ].join(' ')}
-                    >
-                      {log.feature === 'ocr' ? '智能 OCR' : '智能小结'}
+                    <div className="mt-1 inline-flex rounded-full bg-zinc-100/80 px-3 py-1 text-[12px] font-medium text-zinc-400">
+                      {log.ip || 'unknown'}
+                    </div>
+                  </div>
+
+                  <div className="text-[13px] font-medium text-zinc-600">{log.ipLocation || '未知'}</div>
+
+                  <div>
+                    <span className={`inline-flex whitespace-nowrap rounded-[6px] px-2.5 py-1 text-[12px] font-bold tracking-wide ${feature.className}`}>
+                      {feature.label}
                     </span>
-                  </td>
-                  <td className="px-6 py-4 font-semibold">{log.monthlyUsedCount}</td>
-                  <td className="px-6 py-4 font-semibold">{log.totalUsedCount}</td>
-                  <td className="px-6 py-4 text-right">
+                  </div>
+
+                  <div className="text-[15px] font-semibold text-zinc-800">{log.monthlyUsedCount}</div>
+                  <div className="text-[15px] font-semibold text-zinc-800">{log.totalUsedCount}</div>
+
+                  <div className="flex justify-end">
                     <button
                       onClick={() => handleDelete(log.id)}
                       disabled={deleting === log.id}
-                      className="inline-flex items-center gap-1 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-full bg-red-50/70 px-4 py-2 text-[13px] font-medium text-red-500 ring-1 ring-red-100 transition-all hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={15} className="mr-1.5" />
                       {deleting === log.id ? '删除中...' : '删除'}
                     </button>
-                  </td>
-                </tr>
-              ))}
-
-              {logs.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center text-[var(--color-ink-700)]">
-                    暂无使用记录
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
