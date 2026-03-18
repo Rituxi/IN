@@ -44,7 +44,29 @@ interface UserRecord {
   note: string;
   status: string;
   group: string;
-  quotaMonthKey?: string;
+}
+
+interface StoredUserRecord {
+  userId: string;
+  level: UserLevel;
+  extraOcrQuota: number;
+  extraSummaryQuota: number;
+  firstUsedAt: string;
+  note: string;
+  status: string;
+  group: string;
+}
+
+interface UserUpdateInput {
+  level?: UserLevel;
+  group?: string;
+  note?: string;
+  status?: string;
+  extraQuota?: number;
+  extraOcrQuota?: number;
+  extraSummaryQuota?: number;
+  extraOcrQuotaDelta?: number;
+  extraSummaryQuotaDelta?: number;
 }
 
 type FeatureType = 'ocr' | 'summary';
@@ -334,13 +356,6 @@ function getMonthKeyInTimezone(date: Date = new Date(), timeZone: string = QUOTA
   return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
 }
 
-function getMonthKeyFromIso(value: string | undefined, timeZone: string = QUOTA_TIMEZONE): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return getMonthKeyInTimezone(date, timeZone);
-}
-
 function getNextMonthlyResetAt(timeZone: string = QUOTA_TIMEZONE): string {
   const { year, month } = getDatePartsInTimezone(new Date(), timeZone);
   let nextYear = year;
@@ -361,13 +376,16 @@ function toNonNegativeNumber(value: unknown): number {
 }
 
 function normalizeUserLevel(value: unknown): UserLevel {
-  if (value === 'care_plus' || value === 'king') {
-    return value;
-  }
-  return 'care';
+  return value === 'care_plus' || value === 'king' ? value : 'care';
 }
 
-function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord {
+function isUserLevel(value: unknown): value is UserLevel {
+  return value === 'care' || value === 'care_plus' || value === 'king';
+}
+
+// `user:*` persists only stable user profile fields.
+// Limits come from the current level config, and counters come from `user_stats:*`.
+function normalizeStoredUserRecord(raw: any, fallbackUserId: string = ''): StoredUserRecord {
   const level = normalizeUserLevel(raw?.level);
   const legacyExtraQuota = toNonNegativeNumber(raw?.extraQuota);
   const extraOcrQuota =
@@ -375,40 +393,81 @@ function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord 
   const extraSummaryQuota =
     raw?.extraSummaryQuota === undefined ? legacyExtraQuota : toNonNegativeNumber(raw.extraSummaryQuota);
   const normalizedUserId = String(raw?.userId || fallbackUserId || '').trim();
-  const totalOcrUsedCount = toNonNegativeNumber(raw?.totalOcrUsedCount);
-  const totalSummaryUsedCount = toNonNegativeNumber(raw?.totalSummaryUsedCount);
-  const totalUsedCount =
-    raw?.totalUsedCount === undefined || raw?.totalUsedCount === null
-      ? totalOcrUsedCount + totalSummaryUsedCount
-      : toNonNegativeNumber(raw?.totalUsedCount);
 
   return {
     userId: normalizedUserId,
     level,
-    ocrUsed: toNonNegativeNumber(raw?.ocrUsed),
-    ocrLimit: toNonNegativeNumber(raw?.ocrLimit),
-    summaryUsed: toNonNegativeNumber(raw?.summaryUsed),
-    summaryLimit: toNonNegativeNumber(raw?.summaryLimit),
     extraOcrQuota,
     extraSummaryQuota,
-    totalOcrUsedCount,
-    totalSummaryUsedCount,
-    totalUsedCount,
-    isUnlimited: typeof raw?.isUnlimited === 'boolean' ? raw.isUnlimited : level === 'king',
-    isPro: typeof raw?.isPro === 'boolean' ? raw.isPro : level === 'king' || level === 'care_plus',
     firstUsedAt:
       typeof raw?.firstUsedAt === 'string' && raw.firstUsedAt.trim() ? raw.firstUsedAt : new Date().toISOString(),
     note: typeof raw?.note === 'string' ? raw.note : '',
     status: typeof raw?.status === 'string' && raw.status.trim() ? raw.status : 'active',
-    group: typeof raw?.group === 'string' && raw.group.trim() ? raw.group.trim() : DEFAULT_USER_GROUP,
-    quotaMonthKey: typeof raw?.quotaMonthKey === 'string' && raw.quotaMonthKey.trim() ? raw.quotaMonthKey : undefined,
+    group: normalizeGroupName(raw?.group),
+  };
+}
+
+function needsStoredUserMigration(raw: any, normalized: StoredUserRecord): boolean {
+  const legacyFields = [
+    'ocrUsed',
+    'ocrLimit',
+    'summaryUsed',
+    'summaryLimit',
+    'totalOcrUsedCount',
+    'totalSummaryUsedCount',
+    'totalUsedCount',
+    'isUnlimited',
+    'isPro',
+    'extraQuota',
+    'quotaMonthKey',
+  ];
+
+  if (legacyFields.some((field) => raw?.[field] !== undefined)) {
+    return true;
+  }
+
+  return (
+    raw?.userId !== normalized.userId ||
+    normalizeUserLevel(raw?.level) !== normalized.level ||
+    toNonNegativeNumber(raw?.extraOcrQuota) !== normalized.extraOcrQuota ||
+    toNonNegativeNumber(raw?.extraSummaryQuota) !== normalized.extraSummaryQuota ||
+    (typeof raw?.firstUsedAt === 'string' && raw.firstUsedAt.trim() ? raw.firstUsedAt : '') !== normalized.firstUsedAt ||
+    (typeof raw?.note === 'string' ? raw.note : '') !== normalized.note ||
+    (typeof raw?.status === 'string' && raw.status.trim() ? raw.status : 'active') !== normalized.status ||
+    normalizeGroupName(raw?.group) !== normalized.group
+  );
+}
+
+function serializeStoredUserRecord(user: StoredUserRecord): string {
+  return JSON.stringify(user);
+}
+
+function buildRuntimeUserRecord(user: StoredUserRecord, levelConfig: LevelConfig): UserRecord {
+  return {
+    userId: user.userId,
+    level: user.level,
+    ocrUsed: 0,
+    ocrLimit: toNonNegativeNumber(levelConfig.ocrLimit),
+    summaryUsed: 0,
+    summaryLimit: toNonNegativeNumber(levelConfig.summaryLimit),
+    extraOcrQuota: user.extraOcrQuota,
+    extraSummaryQuota: user.extraSummaryQuota,
+    totalOcrUsedCount: 0,
+    totalSummaryUsedCount: 0,
+    totalUsedCount: 0,
+    isUnlimited: user.level === 'king',
+    isPro: user.level === 'king' || user.level === 'care_plus',
+    firstUsedAt: user.firstUsedAt,
+    note: user.note,
+    status: user.status,
+    group: user.group,
   };
 }
 
 // Usage statistics source of truth:
-// 1. ocrUsed / summaryUsed are the current natural-month totals.
-// 2. totalOcrUsedCount / totalSummaryUsedCount are lifetime totals by feature.
-// 3. usage_logs only stores snapshots for display and never drives counters.
+// 1. `user:*` stores profile/config only.
+// 2. `user_stats:*` stores monthly and lifetime counters.
+// 3. `usage_logs` only stores snapshots for display and never drives counters.
 function getUserFeatureTotalKey(userId: string, feature: FeatureType): string {
   return `user_stats:${userId}:total:${feature}`;
 }
@@ -421,13 +480,17 @@ function getUserFeaturePendingReservationsKey(userId: string, feature: FeatureTy
   return `user_stats:${userId}:pending:${feature}`;
 }
 
-async function hydrateUsersUsage(users: UserRecord[]): Promise<UserRecord[]> {
+async function hydrateUsersUsage(users: StoredUserRecord[]): Promise<UserRecord[]> {
   if (!users.length) {
-    return users;
+    return [];
   }
 
+  const configs = await getLevelConfigs();
+  const normalizedUsers = users.map((user) =>
+    buildRuntimeUserRecord(user, configs[user.level] || configs.care || DEFAULT_LEVEL_CONFIGS.care),
+  );
   const monthKey = getMonthKeyInTimezone();
-  const keys = users.flatMap((user) => [
+  const keys = normalizedUsers.flatMap((user) => [
     getUserFeatureMonthlyKey(user.userId, 'ocr', monthKey),
     getUserFeatureMonthlyKey(user.userId, 'summary', monthKey),
     getUserFeatureTotalKey(user.userId, 'ocr'),
@@ -435,7 +498,7 @@ async function hydrateUsersUsage(users: UserRecord[]): Promise<UserRecord[]> {
   ]);
   const values = await redis.mget(...keys);
 
-  return users.map((user, index) => {
+  return normalizedUsers.map((user, index) => {
     const offset = index * 4;
     const totalOcrUsedCount = toNonNegativeNumber(values[offset + 2]);
     const totalSummaryUsedCount = toNonNegativeNumber(values[offset + 3]);
@@ -451,7 +514,7 @@ async function hydrateUsersUsage(users: UserRecord[]): Promise<UserRecord[]> {
   });
 }
 
-async function hydrateUserUsage(user: UserRecord): Promise<UserRecord> {
+async function hydrateUserUsage(user: StoredUserRecord): Promise<UserRecord> {
   const [hydratedUser] = await hydrateUsersUsage([user]);
   return hydratedUser;
 }
@@ -1091,87 +1154,195 @@ const checkAdmin = (req: any, res: any, next: any) => {
 };
 
 // --- User Management ---
+const USER_PATCH_SKIP_TOKEN = '__USER_PATCH_SKIP__';
+
 async function getUser(userId: string) {
-  const userStr = await redis.get(`user:${userId}`);
+  const userKey = `user:${userId}`;
+  const userStr = await redis.get(userKey);
   if (userStr) {
     const parsed = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
-    const normalized = await hydrateUserUsage(normalizeUserRecord(parsed, userId));
-    if (
-      parsed?.extraOcrQuota === undefined ||
-      parsed?.extraSummaryQuota === undefined ||
-      parsed?.group !== normalized.group ||
-      parsed?.totalUsedCount !== normalized.totalUsedCount
-    ) {
-      await redis.set(`user:${userId}`, JSON.stringify(normalized));
+    const normalized = normalizeStoredUserRecord(parsed, userId);
+    if (needsStoredUserMigration(parsed, normalized)) {
+      await redis.set(userKey, serializeStoredUserRecord(normalized));
     }
-    return normalized;
+    return hydrateUserUsage(normalized);
   }
-  
-  const configs = await getLevelConfigs();
-  const defaultConfig = configs.care;
-  
-  const newUser: UserRecord = {
+
+  const newUser: StoredUserRecord = {
     userId,
     level: 'care',
-    ocrUsed: 0,
-    ocrLimit: defaultConfig.ocrLimit,
-    summaryUsed: 0,
-    summaryLimit: defaultConfig.summaryLimit,
     extraOcrQuota: 0,
     extraSummaryQuota: 0,
-    totalOcrUsedCount: 0,
-    totalSummaryUsedCount: 0,
-    totalUsedCount: 0,
-    isUnlimited: false,
-    isPro: false,
     firstUsedAt: new Date().toISOString(),
     note: '',
     status: 'active',
     group: DEFAULT_USER_GROUP,
-    quotaMonthKey: getMonthKeyInTimezone(),
   };
-  await redis.set(`user:${userId}`, JSON.stringify(newUser));
+  await redis.set(userKey, serializeStoredUserRecord(newUser));
   return hydrateUserUsage(newUser);
 }
 
-async function updateUser(userId: string, data: any) {
-  const user = await getUser(userId);
+async function patchStoredUserRecord(userId: string, patch: UserUpdateInput): Promise<StoredUserRecord> {
+  const luaScript = `
+    local raw = redis.call('GET', KEYS[1])
+    local existing = raw and cjson.decode(raw) or {}
+
+    local function sanitize_number(value)
+      local numeric = tonumber(value)
+      if not numeric or numeric < 0 then
+        return 0
+      end
+      return math.floor(numeric)
+    end
+
+    local function read_existing_number(primary, legacy)
+      local current = existing[primary]
+      if current == nil and legacy then
+        current = existing[legacy]
+      end
+      return sanitize_number(current or 0)
+    end
+
+    local level = existing.level or 'care'
+    if level ~= 'care' and level ~= 'care_plus' and level ~= 'king' then
+      level = 'care'
+    end
+    if ARGV[2] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      level = ARGV[2]
+    end
+
+    local group = existing.group
+    if type(group) ~= 'string' or group == '' then
+      group = ARGV[10]
+    end
+    if ARGV[3] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      group = ARGV[3]
+    end
+
+    local note = existing.note
+    if type(note) ~= 'string' then
+      note = ''
+    end
+    if ARGV[4] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      note = ARGV[4]
+    end
+
+    local status = existing.status
+    if type(status) ~= 'string' or status == '' then
+      status = 'active'
+    end
+    if ARGV[5] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      status = ARGV[5]
+    end
+
+    local extra_ocr = read_existing_number('extraOcrQuota', 'extraQuota')
+    local extra_summary = read_existing_number('extraSummaryQuota', 'extraQuota')
+
+    if ARGV[6] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      extra_ocr = sanitize_number(ARGV[6])
+    else
+      extra_ocr = sanitize_number(extra_ocr + sanitize_number(ARGV[8]))
+    end
+    if ARGV[7] ~= '${USER_PATCH_SKIP_TOKEN}' then
+      extra_summary = sanitize_number(ARGV[7])
+    else
+      extra_summary = sanitize_number(extra_summary + sanitize_number(ARGV[9]))
+    end
+
+    local first_used_at = existing.firstUsedAt
+    if type(first_used_at) ~= 'string' or first_used_at == '' then
+      first_used_at = ARGV[11]
+    end
+
+    local stored = {
+      userId = ARGV[1],
+      level = level,
+      extraOcrQuota = extra_ocr,
+      extraSummaryQuota = extra_summary,
+      firstUsedAt = first_used_at,
+      note = note,
+      status = status,
+      group = group
+    }
+
+    redis.call('SET', KEYS[1], cjson.encode(stored))
+    return cjson.encode(stored)
+  `;
+
+  const result = await redis.evalRaw(
+    luaScript,
+    [`user:${userId}`],
+    [
+      userId,
+      patch.level ?? USER_PATCH_SKIP_TOKEN,
+      patch.group ?? USER_PATCH_SKIP_TOKEN,
+      patch.note ?? USER_PATCH_SKIP_TOKEN,
+      patch.status ?? USER_PATCH_SKIP_TOKEN,
+      patch.extraOcrQuota ?? USER_PATCH_SKIP_TOKEN,
+      patch.extraSummaryQuota ?? USER_PATCH_SKIP_TOKEN,
+      toNonNegativeNumber(patch.extraOcrQuotaDelta),
+      toNonNegativeNumber(patch.extraSummaryQuotaDelta),
+      DEFAULT_USER_GROUP,
+      new Date().toISOString(),
+    ],
+  );
+
+  const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+  return normalizeStoredUserRecord(parsed, userId);
+}
+
+async function updateUser(userId: string, data: UserUpdateInput) {
+  const patch: UserUpdateInput = {};
   const hasLegacyExtraQuota = data?.extraQuota !== undefined;
-  const normalizedLegacyExtraQuota = hasLegacyExtraQuota ? toNonNegativeNumber(data.extraQuota) : null;
-  const nextExtraOcrQuota =
-    data?.extraOcrQuota !== undefined
-      ? toNonNegativeNumber(data.extraOcrQuota)
-      : normalizedLegacyExtraQuota ?? user.extraOcrQuota;
-  const nextExtraSummaryQuota =
-    data?.extraSummaryQuota !== undefined
-      ? toNonNegativeNumber(data.extraSummaryQuota)
-      : normalizedLegacyExtraQuota ?? user.extraSummaryQuota;
-  const updated: UserRecord = normalizeUserRecord({
-    ...user,
-    ...data,
-    extraOcrQuota: nextExtraOcrQuota,
-    extraSummaryQuota: nextExtraSummaryQuota,
-    group: typeof data.group === 'string' && data.group.trim() ? data.group.trim() : user.group || DEFAULT_USER_GROUP,
-  }, userId);
-  
-  if (data.level) {
+  const normalizedLegacyExtraQuota = hasLegacyExtraQuota ? toNonNegativeNumber(data.extraQuota) : undefined;
+  const hasAbsoluteExtraOcrQuota = data.extraOcrQuota !== undefined || normalizedLegacyExtraQuota !== undefined;
+  const hasAbsoluteExtraSummaryQuota = data.extraSummaryQuota !== undefined || normalizedLegacyExtraQuota !== undefined;
+
+  if (data.level !== undefined) {
+    if (!isUserLevel(data.level)) {
+      throw new Error(`Invalid level: ${String(data.level)}`);
+    }
     const configs = await getLevelConfigs();
-    const config = configs[data.level];
-    if (!config) {
+    if (!configs[data.level]) {
       throw new Error(`Invalid level: ${data.level}`);
     }
-    updated.ocrLimit = config.ocrLimit;
-    updated.summaryLimit = config.summaryLimit;
-    updated.isUnlimited = data.level === 'king';
-    updated.isPro = data.level === 'king' || data.level === 'care_plus';
+    patch.level = data.level;
   }
 
-  if (!updated.group) {
-    updated.group = DEFAULT_USER_GROUP;
+  if (data.group !== undefined) {
+    patch.group = normalizeGroupName(data.group);
   }
-  
-  await redis.set(`user:${userId}`, JSON.stringify(updated));
-  return updated;
+
+  if (data.note !== undefined) {
+    patch.note = typeof data.note === 'string' ? data.note.trim() : '';
+  }
+
+  if (data.status !== undefined && typeof data.status === 'string') {
+    patch.status = data.status.trim() || 'active';
+  }
+
+  if (data.extraOcrQuota !== undefined) {
+    patch.extraOcrQuota = toNonNegativeNumber(data.extraOcrQuota);
+  } else if (normalizedLegacyExtraQuota !== undefined) {
+    patch.extraOcrQuota = normalizedLegacyExtraQuota;
+  }
+
+  if (data.extraSummaryQuota !== undefined) {
+    patch.extraSummaryQuota = toNonNegativeNumber(data.extraSummaryQuota);
+  } else if (normalizedLegacyExtraQuota !== undefined) {
+    patch.extraSummaryQuota = normalizedLegacyExtraQuota;
+  }
+
+  if (!hasAbsoluteExtraOcrQuota && data.extraOcrQuotaDelta !== undefined) {
+    patch.extraOcrQuotaDelta = toNonNegativeNumber(data.extraOcrQuotaDelta);
+  }
+
+  if (!hasAbsoluteExtraSummaryQuota && data.extraSummaryQuotaDelta !== undefined) {
+    patch.extraSummaryQuotaDelta = toNonNegativeNumber(data.extraSummaryQuotaDelta);
+  }
+
+  const updatedProfile = await patchStoredUserRecord(userId, patch);
+  return hydrateUserUsage(updatedProfile);
 }
 
 function isPrivateIp(ip: string): boolean {
@@ -1734,7 +1905,7 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
           .filter(Boolean)
           .map(u => typeof u === 'string' ? JSON.parse(u) : u)
           .filter((u: any) => u?.userId && !u.userId.startsWith('web_'))
-          .map((u: any) => normalizeUserRecord(u, String(u?.userId || '')));
+          .map((u: any) => normalizeStoredUserRecord(u, String(u?.userId || '')));
         const hydratedUsers = await hydrateUsersUsage(allUsers);
         users.push(...hydratedUsers.map((user) => buildAdminUserView(user)));
       }

@@ -47,6 +47,14 @@ interface UserConfigDraft {
   extraSummaryQuota: string;
 }
 
+interface UpdateUserPayload {
+  group?: string;
+  level?: UserLevel;
+  note?: string;
+  extraOcrQuotaDelta?: number;
+  extraSummaryQuotaDelta?: number;
+}
+
 const DEFAULT_GROUP = '未分组';
 
 const LEVEL_META: Record<UserLevel | 'all', { label: string; icon: typeof UsersIcon }> = {
@@ -217,7 +225,7 @@ export default function Users() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [savingUserId, selectedUserId]);
 
-  const handleUpdateUser = async (userId: string, data: Partial<User>) => {
+  const handleUpdateUser = async (userId: string, data: UpdateUserPayload) => {
     setSavingUserId(userId);
     try {
       const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
@@ -356,12 +364,12 @@ export default function Users() {
     }
 
     const nextGroup = configDraft.group.trim() || DEFAULT_GROUP;
-    const payload: Partial<User> = {
+    const payload: UpdateUserPayload = {
       group: nextGroup,
       level: configDraft.level,
       note: configDraft.note.trim(),
-      extraOcrQuota: (selectedUser.extraOcrQuota || 0) + ocrExtra,
-      extraSummaryQuota: (selectedUser.extraSummaryQuota || 0) + summaryExtra,
+      extraOcrQuotaDelta: ocrExtra,
+      extraSummaryQuotaDelta: summaryExtra,
     };
 
     const updatedUser = await handleUpdateUser(selectedUser.userId, payload);
