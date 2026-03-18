@@ -1426,7 +1426,7 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
 
 apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
-    const logsStr = await redis.lrange('usage_logs', 0, 99);
+    const logsStr = await redis.lrange('usage_logs', 0, 499);
     const logs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
     rebuildFeatureTotals(logs);
     res.json(logs);
