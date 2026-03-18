@@ -415,8 +415,10 @@ export default function Users() {
               ) : null}
 
               <button
+                type="button"
                 onClick={reloadPageData}
                 disabled={loading}
+                aria-label={loading ? '刷新中' : '刷新用户数据'}
                 className="flex items-center gap-2 rounded-full bg-white/80 px-4 py-2.5 text-[14px] font-medium text-zinc-800 shadow-sm ring-1 ring-zinc-200/50 transition-all hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
