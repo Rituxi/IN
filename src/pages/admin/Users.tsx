@@ -79,13 +79,6 @@ function getDisplayGroup(group?: string) {
   return value || DEFAULT_GROUP;
 }
 
-function getQuotaDisplay(used: number, limit: number, extra: number, isUnlimited: boolean) {
-  if (isUnlimited) {
-    return '无限';
-  }
-  return `${used}/${limit + extra}`;
-}
-
 function getBaseUsed(used: number, limit: number) {
   return Math.min(Math.max(used, 0), Math.max(limit, 0));
 }
