@@ -34,6 +34,8 @@ interface UserRecord {
   summaryLimit: number;
   extraOcrQuota: number;
   extraSummaryQuota: number;
+  totalOcrUsedCount: number;
+  totalSummaryUsedCount: number;
   totalUsedCount: number;
   isUnlimited: boolean;
   isPro: boolean;
@@ -352,6 +354,8 @@ function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord 
     summaryLimit: toNonNegativeNumber(raw?.summaryLimit),
     extraOcrQuota,
     extraSummaryQuota,
+    totalOcrUsedCount: toNonNegativeNumber(raw?.totalOcrUsedCount),
+    totalSummaryUsedCount: toNonNegativeNumber(raw?.totalSummaryUsedCount),
     totalUsedCount: toNonNegativeNumber(raw?.totalUsedCount),
     isUnlimited: typeof raw?.isUnlimited === 'boolean' ? raw.isUnlimited : level === 'king',
     isPro: typeof raw?.isPro === 'boolean' ? raw.isPro : level === 'king' || level === 'care_plus',
@@ -792,6 +796,8 @@ async function getUser(userId: string) {
     summaryLimit: defaultConfig.summaryLimit,
     extraOcrQuota: 0,
     extraSummaryQuota: 0,
+    totalOcrUsedCount: 0,
+    totalSummaryUsedCount: 0,
     totalUsedCount: 0,
     isUnlimited: false,
     isPro: false,
@@ -997,6 +1003,26 @@ async function logUsage(userId: string, ip: string, feature: string, monthlyUsed
   await redis.incr(`stats:monthlyCalls:${month}`);
 }
 
+function rebuildFeatureTotals<T extends { userId?: string; feature?: string; usedAt?: string; totalUsedCount?: number }>(logs: T[]): T[] {
+  const ordered = [...logs].sort((a, b) => {
+    const aTime = new Date(a.usedAt || '').getTime();
+    const bTime = new Date(b.usedAt || '').getTime();
+    return aTime - bTime;
+  });
+
+  const counters = new Map<string, number>();
+  for (const log of ordered) {
+    const userId = String(log.userId || '').trim();
+    const feature = String(log.feature || '').trim();
+    const counterKey = `${userId}:${feature}`;
+    const nextCount = (counters.get(counterKey) || 0) + 1;
+    counters.set(counterKey, nextCount);
+    log.totalUsedCount = nextCount;
+  }
+
+  return logs;
+}
+
 function normalizeGroupName(value: unknown): string {
   const group = toText(value).trim().slice(0, 30);
   return group || DEFAULT_USER_GROUP;
@@ -1148,11 +1174,12 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     const resultJson = normalizeOcrResult(parsed);
 
     user.ocrUsed += 1;
+    user.totalOcrUsedCount += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
 
     const ip = extractClientIp(req);
-    await logUsage(effectiveUserId, ip, 'ocr', user.ocrUsed, user.totalUsedCount);
+    await logUsage(effectiveUserId, ip, 'ocr', user.ocrUsed, user.totalOcrUsedCount);
 
     res.json(resultJson);
   } catch (error: any) {
@@ -1269,11 +1296,12 @@ apiRouter.post('/summary/text', async (req, res) => {
     const nextResetAt = getNextMonthlyResetAt();
 
     user.summaryUsed += 1;
+    user.totalSummaryUsedCount += 1;
     user.totalUsedCount += 1;
     await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
 
     const ip = extractClientIp(req);
-    await logUsage(effectiveUserId, ip, 'summary', user.summaryUsed, user.totalUsedCount);
+    await logUsage(effectiveUserId, ip, 'summary', user.summaryUsed, user.totalSummaryUsedCount);
 
     res.json({
       success: true,
@@ -1400,6 +1428,7 @@ apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
     const logsStr = await redis.lrange('usage_logs', 0, 99);
     const logs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
+    rebuildFeatureTotals(logs);
     res.json(logs);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

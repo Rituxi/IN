@@ -161,7 +161,7 @@ export default function Logs() {
                 <th className="px-6 py-4 font-semibold">IP 归属地</th>
                 <th className="px-6 py-4 font-semibold">功能</th>
                 <th className="px-6 py-4 font-semibold">本月次数</th>
-                <th className="px-6 py-4 font-semibold">累计次数</th>
+                <th className="px-6 py-4 font-semibold">该功能累计</th>
                 <th className="px-6 py-4 font-semibold text-right">操作</th>
               </tr>
             </thead>
