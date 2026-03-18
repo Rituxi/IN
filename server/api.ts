@@ -21,6 +21,7 @@ interface RedisClient {
   mget(...keys: string[]): Promise<(string | null)[]>;
   scan(cursor: string, options?: { match?: string; count?: number }): Promise<[string, string[]]>;
   eval(script: string, keys: string[], args: (string | number)[]): Promise<number>;
+  evalRaw(script: string, keys: string[], args: (string | number)[]): Promise<unknown>;
 }
 
 type UserLevel = 'care' | 'care_plus' | 'king';
@@ -44,6 +45,27 @@ interface UserRecord {
   status: string;
   group: string;
   quotaMonthKey?: string;
+}
+
+type FeatureType = 'ocr' | 'summary';
+
+interface FeatureUsageStats {
+  monthlyUsedCount: number;
+  totalUsedCount: number;
+  baseLimit: number;
+  baseUsedCount: number;
+  baseRemainingCount: number;
+  extraLimit: number;
+  extraUsedCount: number;
+  extraRemainingCount: number;
+}
+
+interface AdminUserView extends UserRecord {
+  usageStats: Record<FeatureType, FeatureUsageStats>;
+}
+
+interface FeatureUsageReservation {
+  reservationId: string;
 }
 
 class IORedisAdapter implements RedisClient {
@@ -101,6 +123,10 @@ class IORedisAdapter implements RedisClient {
   async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
     const result = await this.client.eval(script, keys.length, ...keys, ...args);
     return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
+  async evalRaw(script: string, keys: string[], args: (string | number)[]): Promise<unknown> {
+    return this.client.eval(script, keys.length, ...keys, ...args);
   }
 }
 
@@ -166,6 +192,10 @@ class UpstashRedisAdapter implements RedisClient {
     const result = await this.client.eval(script, keys, args.map(String));
     return typeof result === 'number' ? result : parseInt(result as string, 10);
   }
+
+  async evalRaw(script: string, keys: string[], args: (string | number)[]): Promise<unknown> {
+    return this.client.eval(script, keys, args.map(String));
+  }
 }
 
 let redisClient: RedisClient | null = null;
@@ -218,6 +248,7 @@ const redis: RedisClient = {
   mget: (...keys: string[]) => getRedisClient().mget(...keys),
   scan: (cursor: string, options?: { match?: string; count?: number }) => getRedisClient().scan(cursor, options),
   eval: (script: string, keys: string[], args: (string | number)[]) => getRedisClient().eval(script, keys, args),
+  evalRaw: (script: string, keys: string[], args: (string | number)[]) => getRedisClient().evalRaw(script, keys, args),
 };
 
 // Initialize Gemini API
@@ -344,6 +375,12 @@ function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord 
   const extraSummaryQuota =
     raw?.extraSummaryQuota === undefined ? legacyExtraQuota : toNonNegativeNumber(raw.extraSummaryQuota);
   const normalizedUserId = String(raw?.userId || fallbackUserId || '').trim();
+  const totalOcrUsedCount = toNonNegativeNumber(raw?.totalOcrUsedCount);
+  const totalSummaryUsedCount = toNonNegativeNumber(raw?.totalSummaryUsedCount);
+  const totalUsedCount =
+    raw?.totalUsedCount === undefined || raw?.totalUsedCount === null
+      ? totalOcrUsedCount + totalSummaryUsedCount
+      : toNonNegativeNumber(raw?.totalUsedCount);
 
   return {
     userId: normalizedUserId,
@@ -354,9 +391,9 @@ function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord 
     summaryLimit: toNonNegativeNumber(raw?.summaryLimit),
     extraOcrQuota,
     extraSummaryQuota,
-    totalOcrUsedCount: toNonNegativeNumber(raw?.totalOcrUsedCount),
-    totalSummaryUsedCount: toNonNegativeNumber(raw?.totalSummaryUsedCount),
-    totalUsedCount: toNonNegativeNumber(raw?.totalUsedCount),
+    totalOcrUsedCount,
+    totalSummaryUsedCount,
+    totalUsedCount,
     isUnlimited: typeof raw?.isUnlimited === 'boolean' ? raw.isUnlimited : level === 'king',
     isPro: typeof raw?.isPro === 'boolean' ? raw.isPro : level === 'king' || level === 'care_plus',
     firstUsedAt:
@@ -365,6 +402,291 @@ function normalizeUserRecord(raw: any, fallbackUserId: string = ''): UserRecord 
     status: typeof raw?.status === 'string' && raw.status.trim() ? raw.status : 'active',
     group: typeof raw?.group === 'string' && raw.group.trim() ? raw.group.trim() : DEFAULT_USER_GROUP,
     quotaMonthKey: typeof raw?.quotaMonthKey === 'string' && raw.quotaMonthKey.trim() ? raw.quotaMonthKey : undefined,
+  };
+}
+
+// Usage statistics source of truth:
+// 1. ocrUsed / summaryUsed are the current natural-month totals.
+// 2. totalOcrUsedCount / totalSummaryUsedCount are lifetime totals by feature.
+// 3. usage_logs only stores snapshots for display and never drives counters.
+function getUserFeatureTotalKey(userId: string, feature: FeatureType): string {
+  return `user_stats:${userId}:total:${feature}`;
+}
+
+function getUserFeatureMonthlyKey(userId: string, feature: FeatureType, monthKey: string = getMonthKeyInTimezone()): string {
+  return `user_stats:${userId}:monthly:${monthKey}:${feature}`;
+}
+
+function getUserFeaturePendingReservationsKey(userId: string, feature: FeatureType): string {
+  return `user_stats:${userId}:pending:${feature}`;
+}
+
+async function hydrateUsersUsage(users: UserRecord[]): Promise<UserRecord[]> {
+  if (!users.length) {
+    return users;
+  }
+
+  const monthKey = getMonthKeyInTimezone();
+  const keys = users.flatMap((user) => [
+    getUserFeatureMonthlyKey(user.userId, 'ocr', monthKey),
+    getUserFeatureMonthlyKey(user.userId, 'summary', monthKey),
+    getUserFeatureTotalKey(user.userId, 'ocr'),
+    getUserFeatureTotalKey(user.userId, 'summary'),
+  ]);
+  const values = await redis.mget(...keys);
+
+  return users.map((user, index) => {
+    const offset = index * 4;
+    const totalOcrUsedCount = toNonNegativeNumber(values[offset + 2]);
+    const totalSummaryUsedCount = toNonNegativeNumber(values[offset + 3]);
+
+    return {
+      ...user,
+      ocrUsed: toNonNegativeNumber(values[offset]),
+      summaryUsed: toNonNegativeNumber(values[offset + 1]),
+      totalOcrUsedCount,
+      totalSummaryUsedCount,
+      totalUsedCount: totalOcrUsedCount + totalSummaryUsedCount,
+    };
+  });
+}
+
+async function hydrateUserUsage(user: UserRecord): Promise<UserRecord> {
+  const [hydratedUser] = await hydrateUsersUsage([user]);
+  return hydratedUser;
+}
+
+function getFeatureMonthlyUsedCount(user: UserRecord, feature: FeatureType): number {
+  return feature === 'ocr' ? user.ocrUsed : user.summaryUsed;
+}
+
+function getFeatureTotalUsedCount(user: UserRecord, feature: FeatureType): number {
+  return feature === 'ocr' ? user.totalOcrUsedCount : user.totalSummaryUsedCount;
+}
+
+function getFeatureBaseLimit(user: UserRecord, feature: FeatureType): number {
+  return feature === 'ocr' ? user.ocrLimit : user.summaryLimit;
+}
+
+function getFeatureExtraLimit(user: UserRecord, feature: FeatureType): number {
+  return feature === 'ocr' ? user.extraOcrQuota : user.extraSummaryQuota;
+}
+
+function getFeatureTotalLimit(user: UserRecord, feature: FeatureType): number {
+  if (user.isUnlimited) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return getFeatureBaseLimit(user, feature) + getFeatureExtraLimit(user, feature);
+}
+
+function buildFeatureUsageStats(user: UserRecord, feature: FeatureType): FeatureUsageStats {
+  const monthlyUsedCount = getFeatureMonthlyUsedCount(user, feature);
+  const totalUsedCount = getFeatureTotalUsedCount(user, feature);
+  const baseLimit = getFeatureBaseLimit(user, feature);
+  const extraLimit = getFeatureExtraLimit(user, feature);
+  const baseUsedCount = user.isUnlimited ? monthlyUsedCount : Math.min(monthlyUsedCount, baseLimit);
+  const baseRemainingCount = user.isUnlimited ? 0 : Math.max(0, baseLimit - baseUsedCount);
+  const extraUsedCount = user.isUnlimited ? 0 : Math.max(0, monthlyUsedCount - baseLimit);
+  const extraRemainingCount = user.isUnlimited ? extraLimit : Math.max(0, extraLimit - extraUsedCount);
+
+  return {
+    monthlyUsedCount,
+    totalUsedCount,
+    baseLimit,
+    baseUsedCount,
+    baseRemainingCount,
+    extraLimit,
+    extraUsedCount,
+    extraRemainingCount,
+  };
+}
+
+function buildAdminUserView(user: UserRecord): AdminUserView {
+  return {
+    ...user,
+    usageStats: {
+      ocr: buildFeatureUsageStats(user, 'ocr'),
+      summary: buildFeatureUsageStats(user, 'summary'),
+    },
+  };
+}
+
+function parseLuaReservationResult(result: unknown): { granted: boolean; monthlyUsedCount: number } {
+  if (!Array.isArray(result) || result.length < 3) {
+    throw new Error('Invalid Redis reservation result');
+  }
+
+  return {
+    granted: Number(result[0]) === 1,
+    monthlyUsedCount: toNonNegativeNumber(result[1]),
+  };
+}
+
+function parseLuaCountResult(result: unknown): { committed: boolean; monthlyUsedCount: number; totalUsedCount: number } {
+  if (!Array.isArray(result) || result.length < 3) {
+    throw new Error('Invalid Redis counter result');
+  }
+
+  return {
+    committed: Number(result[0]) === 1,
+    monthlyUsedCount: toNonNegativeNumber(result[1]),
+    totalUsedCount: toNonNegativeNumber(result[2]),
+  };
+}
+
+const USAGE_RESERVATION_TTL_SECONDS = 60 * 30;
+
+// Reserve quota before the AI call, then commit counters and logs only after success.
+async function reserveFeatureUsage(user: UserRecord, feature: FeatureType): Promise<FeatureUsageReservation | null> {
+  if (user.isUnlimited) {
+    return null;
+  }
+
+  const totalLimit = getFeatureTotalLimit(user, feature);
+  const reservationId = `usage_reservation_${uuidv4()}`;
+  const now = Date.now();
+  const expiresAt = now + USAGE_RESERVATION_TTL_SECONDS * 1000;
+  const luaScript = `
+    redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', tonumber(ARGV[3]))
+
+    local monthly = tonumber(redis.call('GET', KEYS[1]) or '0')
+    local pending = redis.call('ZCARD', KEYS[2])
+    if monthly + pending >= tonumber(ARGV[1]) then
+      return { 0, monthly, pending }
+    end
+
+    redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[2])
+    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
+
+    return { 1, monthly, pending + 1 }
+  `;
+  const result = await redis.evalRaw(
+    luaScript,
+    [getUserFeatureMonthlyKey(user.userId, feature), getUserFeaturePendingReservationsKey(user.userId, feature)],
+    [totalLimit, reservationId, now, expiresAt, USAGE_RESERVATION_TTL_SECONDS],
+  );
+  const parsed = parseLuaReservationResult(result);
+
+  if (!parsed.granted) {
+    return null;
+  }
+
+  return { reservationId };
+}
+
+async function releaseFeatureUsageReservation(userId: string, feature: FeatureType, reservationId: string): Promise<void> {
+  const now = Date.now();
+  const luaScript = `
+    redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', tonumber(ARGV[2]))
+    redis.call('ZREM', KEYS[1], ARGV[1])
+
+    local remaining = redis.call('ZCARD', KEYS[1])
+    if remaining == 0 then
+      redis.call('DEL', KEYS[1])
+    else
+      redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+    end
+
+    return remaining
+  `;
+
+  await redis.evalRaw(
+    luaScript,
+    [getUserFeaturePendingReservationsKey(userId, feature)],
+    [reservationId, now, USAGE_RESERVATION_TTL_SECONDS],
+  );
+}
+
+async function recordFeatureUsage(
+  userId: string,
+  ip: string,
+  ipLocation: string,
+  feature: FeatureType,
+  reservationId?: string,
+) {
+  const monthKey = getMonthKeyInTimezone();
+  const today = getDateKeyInTimezone();
+  const usedAt = new Date().toISOString();
+  const logId = `log_${uuidv4()}`;
+  const monthlyExpireSeconds = 60 * 60 * 24 * 400;
+  const luaScript = `
+    if ARGV[1] ~= '' then
+      redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', tonumber(ARGV[2]))
+      local removed = redis.call('ZREM', KEYS[3], ARGV[1])
+      if removed == 0 then
+        return { 0, redis.call('GET', KEYS[2]) or '0', redis.call('GET', KEYS[1]) or '0' }
+      end
+
+      local remaining = redis.call('ZCARD', KEYS[3])
+      if remaining == 0 then
+        redis.call('DEL', KEYS[3])
+      else
+        redis.call('EXPIRE', KEYS[3], tonumber(ARGV[3]))
+      end
+    end
+
+    local total = redis.call('INCR', KEYS[1])
+    local monthly = redis.call('INCR', KEYS[2])
+    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[4]))
+    redis.call('INCR', KEYS[6])
+    redis.call('INCR', KEYS[7])
+    redis.call('INCR', KEYS[8])
+
+    local log = cjson.encode({
+      id = ARGV[5],
+      userId = ARGV[6],
+      ip = ARGV[7],
+      ipLocation = ARGV[8],
+      feature = ARGV[9],
+      monthlyUsedCount = monthly,
+      totalUsedCount = total,
+      usedAt = ARGV[10],
+      status = 'success'
+    })
+
+    redis.call('LPUSH', KEYS[4], log)
+    redis.call('SET', KEYS[5], log)
+    redis.call('LTRIM', KEYS[4], 0, 999)
+
+    return { 1, monthly, total }
+  `;
+
+  const result = await redis.evalRaw(
+    luaScript,
+    [
+      getUserFeatureTotalKey(userId, feature),
+      getUserFeatureMonthlyKey(userId, feature, monthKey),
+      getUserFeaturePendingReservationsKey(userId, feature),
+      'usage_logs',
+      `log_index:${logId}`,
+      'stats:totalCalls',
+      `stats:dailyCalls:${today}`,
+      `stats:monthlyCalls:${monthKey}`,
+    ],
+    [
+      reservationId || '',
+      Date.now(),
+      USAGE_RESERVATION_TTL_SECONDS,
+      monthlyExpireSeconds,
+      logId,
+      userId,
+      ip,
+      ipLocation,
+      feature,
+      usedAt,
+    ],
+  );
+  const parsed = parseLuaCountResult(result);
+
+  if (!parsed.committed) {
+    throw new Error(`Usage reservation missing for ${feature}:${userId}`);
+  }
+
+  return {
+    logId,
+    usedAt,
+    monthlyUsedCount: parsed.monthlyUsedCount,
+    totalUsedCount: parsed.totalUsedCount,
   };
 }
 
@@ -773,21 +1095,12 @@ async function getUser(userId: string) {
   const userStr = await redis.get(`user:${userId}`);
   if (userStr) {
     const parsed = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
-    const usageFeatureTotals =
-      parsed?.totalOcrUsedCount === undefined || parsed?.totalSummaryUsedCount === undefined
-        ? await getUsageFeatureTotals()
-        : undefined;
-    const normalized = fillMissingFeatureTotals(
-      parsed,
-      normalizeUserRecord(parsed, userId),
-      usageFeatureTotals,
-    );
+    const normalized = await hydrateUserUsage(normalizeUserRecord(parsed, userId));
     if (
       parsed?.extraOcrQuota === undefined ||
       parsed?.extraSummaryQuota === undefined ||
       parsed?.group !== normalized.group ||
-      parsed?.totalOcrUsedCount === undefined ||
-      parsed?.totalSummaryUsedCount === undefined
+      parsed?.totalUsedCount !== normalized.totalUsedCount
     ) {
       await redis.set(`user:${userId}`, JSON.stringify(normalized));
     }
@@ -818,32 +1131,7 @@ async function getUser(userId: string) {
     quotaMonthKey: getMonthKeyInTimezone(),
   };
   await redis.set(`user:${userId}`, JSON.stringify(newUser));
-  return newUser;
-}
-
-async function ensureMonthlyQuotaReset(user: UserRecord): Promise<UserRecord> {
-  const currentMonthKey = getMonthKeyInTimezone();
-  const savedMonthKey = typeof user.quotaMonthKey === 'string' ? user.quotaMonthKey : '';
-  const fallbackMonthKey = getMonthKeyFromIso(user.firstUsedAt) || currentMonthKey;
-  const lastMonthKey = savedMonthKey || fallbackMonthKey;
-
-  if (lastMonthKey === currentMonthKey) {
-    if (savedMonthKey === currentMonthKey) {
-      return user;
-    }
-    const patchedUser: UserRecord = { ...user, quotaMonthKey: currentMonthKey };
-    await redis.set(`user:${user.userId}`, JSON.stringify(patchedUser));
-    return patchedUser;
-  }
-
-  const resetUser: UserRecord = {
-    ...user,
-    ocrUsed: 0,
-    summaryUsed: 0,
-    quotaMonthKey: currentMonthKey,
-  };
-  await redis.set(`user:${user.userId}`, JSON.stringify(resetUser));
-  return resetUser;
+  return hydrateUserUsage(newUser);
 }
 
 async function updateUser(userId: string, data: any) {
@@ -987,107 +1275,6 @@ async function getIpLocation(ip: string): Promise<string> {
   return fallbackLocation;
 }
 
-async function logUsage(userId: string, ip: string, feature: string, monthlyUsedCount: number, totalUsedCount: number) {
-  const ipLocation = await getIpLocation(ip);
-  const log = {
-    id: `log_${uuidv4()}`,
-    userId,
-    ip,
-    ipLocation,
-    feature,
-    monthlyUsedCount,
-    totalUsedCount,
-    usedAt: new Date().toISOString(),
-    status: 'success',
-  };
-  const logStr = JSON.stringify(log);
-  await redis.lpush('usage_logs', logStr);
-  await redis.set(`log_index:${log.id}`, logStr);
-  await redis.ltrim('usage_logs', 0, 999);
-  
-  // Update global stats
-  await redis.incr('stats:totalCalls');
-  const today = getDateKeyInTimezone();
-  await redis.incr(`stats:dailyCalls:${today}`);
-  const month = today.substring(0, 7);
-  await redis.incr(`stats:monthlyCalls:${month}`);
-}
-
-function rebuildFeatureTotals<T extends { userId?: string; feature?: string; usedAt?: string; totalUsedCount?: number }>(logs: T[]): T[] {
-  const ordered = [...logs].sort((a, b) => {
-    const aTime = new Date(a.usedAt || '').getTime();
-    const bTime = new Date(b.usedAt || '').getTime();
-    return aTime - bTime;
-  });
-
-  const counters = new Map<string, number>();
-  for (const log of ordered) {
-    const userId = String(log.userId || '').trim();
-    const feature = String(log.feature || '').trim();
-    const counterKey = `${userId}:${feature}`;
-    const nextCount = (counters.get(counterKey) || 0) + 1;
-    counters.set(counterKey, nextCount);
-    log.totalUsedCount = nextCount;
-  }
-
-  return logs;
-}
-
-async function getUsageFeatureTotals() {
-  const totals = new Map<string, { ocr: number; summary: number }>();
-  const logsStr = await redis.lrange('usage_logs', 0, 999);
-  const logs = logsStr.map((item) => (typeof item === 'string' ? JSON.parse(item) : item));
-  rebuildFeatureTotals(logs);
-
-  for (const log of logs) {
-    const userId = toText(log?.userId).trim();
-    const feature = toText(log?.feature).trim();
-    if (!userId || (feature !== 'ocr' && feature !== 'summary')) {
-      continue;
-    }
-
-    const current = totals.get(userId) || { ocr: 0, summary: 0 };
-    const nextCount = toNonNegativeNumber(log?.totalUsedCount);
-    if (feature === 'ocr') {
-      current.ocr = Math.max(current.ocr, nextCount);
-    } else {
-      current.summary = Math.max(current.summary, nextCount);
-    }
-    totals.set(userId, current);
-  }
-
-  return totals;
-}
-
-function fillMissingFeatureTotals(
-  raw: any,
-  normalized: UserRecord,
-  usageFeatureTotals?: Map<string, { ocr: number; summary: number }>,
-): UserRecord {
-  const hasStoredOcrTotal = raw?.totalOcrUsedCount !== undefined && raw?.totalOcrUsedCount !== null;
-  const hasStoredSummaryTotal = raw?.totalSummaryUsedCount !== undefined && raw?.totalSummaryUsedCount !== null;
-
-  if (hasStoredOcrTotal && hasStoredSummaryTotal) {
-    return normalized;
-  }
-
-  const logTotals = usageFeatureTotals?.get(normalized.userId);
-  if (!logTotals) {
-    return normalized;
-  }
-
-  return {
-    ...normalized,
-    totalOcrUsedCount: hasStoredOcrTotal ? normalized.totalOcrUsedCount : logTotals.ocr,
-    totalSummaryUsedCount: hasStoredSummaryTotal ? normalized.totalSummaryUsedCount : logTotals.summary,
-    totalUsedCount:
-      hasStoredOcrTotal && hasStoredSummaryTotal
-        ? normalized.totalUsedCount
-        : (hasStoredOcrTotal ? normalized.totalOcrUsedCount : logTotals.ocr) +
-          (hasStoredSummaryTotal ? normalized.totalSummaryUsedCount : logTotals.summary),
-  };
-}
-
 function normalizeGroupName(value: unknown): string {
   const group = toText(value).trim().slice(0, 30);
   return group || DEFAULT_USER_GROUP;
@@ -1182,13 +1369,14 @@ async function validateAndGetUser(openid: string | undefined, userId: string | u
   }
   
   const user = await getUser(effectiveUserId);
-  const normalizedUser = await ensureMonthlyQuotaReset(user);
   
-  return { valid: true, user: normalizedUser, effectiveUserId };
+  return { valid: true, user, effectiveUserId };
 }
 
 // 1. OCR API
 apiRouter.post('/analyze/image-base64', async (req, res) => {
+  let reservation: FeatureUsageReservation | null = null;
+  let effectiveUserIdForUsage = '';
   try {
     const { base64, mimeType, userId, nickname, openid } = req.body;
     if (!base64) {
@@ -1202,9 +1390,13 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
 
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
-    const totalOcrLimit = user.ocrLimit + user.extraOcrQuota;
-    if (!user.isUnlimited && user.ocrUsed >= totalOcrLimit) {
-      return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: 'Monthly OCR quota exceeded' });
+    effectiveUserIdForUsage = effectiveUserId;
+
+    if (!user.isUnlimited) {
+      reservation = await reserveFeatureUsage(user, 'ocr');
+      if (!reservation) {
+        return res.status(403).json({ error: 'QUOTA_EXCEEDED', message: 'Monthly OCR quota exceeded' });
+      }
     }
 
     const configs = await getLevelConfigs();
@@ -1238,16 +1430,20 @@ apiRouter.post('/analyze/image-base64', async (req, res) => {
     const parsed = safeJsonParse(resultText);
     const resultJson = normalizeOcrResult(parsed);
 
-    user.ocrUsed += 1;
-    user.totalOcrUsedCount += 1;
-    user.totalUsedCount += 1;
-    await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
-
     const ip = extractClientIp(req);
-    await logUsage(effectiveUserId, ip, 'ocr', user.ocrUsed, user.totalOcrUsedCount);
+    const ipLocation = await getIpLocation(ip);
+    await recordFeatureUsage(effectiveUserId, ip, ipLocation, 'ocr', reservation?.reservationId);
+    reservation = null;
 
     res.json(resultJson);
   } catch (error: any) {
+    if (reservation && effectiveUserIdForUsage) {
+      try {
+        await releaseFeatureUsageReservation(effectiveUserIdForUsage, 'ocr', reservation.reservationId);
+      } catch (releaseError) {
+        console.error('Failed to release OCR usage reservation:', releaseError);
+      }
+    }
     console.error('OCR Error:', error);
     res.status(500).json({ error: 'SERVER_ERROR', message: error.message });
   }
@@ -1318,6 +1514,8 @@ Rules:
 
 // 2. Summary API
 apiRouter.post('/summary/text', async (req, res) => {
+  let reservation: FeatureUsageReservation | null = null;
+  let effectiveUserIdForUsage = '';
   try {
     const { userId, examData, promptSlot, nickname, userLevel, model, openid } = req.body;
     if (!examData || !Array.isArray(examData.items) || examData.items.length === 0) {
@@ -1335,9 +1533,13 @@ apiRouter.post('/summary/text', async (req, res) => {
 
     const user = validation.user!;
     const effectiveUserId = validation.effectiveUserId!;
-    const totalSummaryLimit = user.summaryLimit + user.extraSummaryQuota;
-    if (!user.isUnlimited && user.summaryUsed >= totalSummaryLimit) {
-      return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: 'Monthly summary quota exceeded' });
+    effectiveUserIdForUsage = effectiveUserId;
+
+    if (!user.isUnlimited) {
+      reservation = await reserveFeatureUsage(user, 'summary');
+      if (!reservation) {
+        return res.status(403).json({ success: false, error: 'QUOTA_EXCEEDED', message: 'Monthly summary quota exceeded' });
+      }
     }
 
     const configs = await getLevelConfigs();
@@ -1360,25 +1562,29 @@ apiRouter.post('/summary/text', async (req, res) => {
     const summary = response.text || 'No summary generated.';
     const nextResetAt = getNextMonthlyResetAt();
 
-    user.summaryUsed += 1;
-    user.totalSummaryUsedCount += 1;
-    user.totalUsedCount += 1;
-    await redis.set(`user:${effectiveUserId}`, JSON.stringify(user));
-
     const ip = extractClientIp(req);
-    await logUsage(effectiveUserId, ip, 'summary', user.summaryUsed, user.totalSummaryUsedCount);
+    const ipLocation = await getIpLocation(ip);
+    const usageSnapshot = await recordFeatureUsage(effectiveUserId, ip, ipLocation, 'summary', reservation?.reservationId);
+    reservation = null;
 
     res.json({
       success: true,
       summary,
       quota: {
-        remaining: user.isUnlimited ? 9999 : totalSummaryLimit - user.summaryUsed,
-        used: user.summaryUsed,
-        limit: totalSummaryLimit,
+        remaining: user.isUnlimited ? 9999 : Math.max(0, getFeatureTotalLimit(user, 'summary') - usageSnapshot.monthlyUsedCount),
+        used: usageSnapshot.monthlyUsedCount,
+        limit: getFeatureTotalLimit(user, 'summary'),
         resetAt: nextResetAt,
       },
     });
   } catch (error: any) {
+    if (reservation && effectiveUserIdForUsage) {
+      try {
+        await releaseFeatureUsageReservation(effectiveUserIdForUsage, 'summary', reservation.reservationId);
+      } catch (releaseError) {
+        console.error('Failed to release summary usage reservation:', releaseError);
+      }
+    }
     console.error('Summary Error:', error);
     res.status(500).json({ success: false, error: 'SERVER_ERROR', message: error.message });
   }
@@ -1395,8 +1601,7 @@ apiRouter.get('/user/quota', async (req, res) => {
       return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'Missing openid or userId' });
     }
 
-    const user = await getUser(effectiveUserId);
-    const normalizedUser = await ensureMonthlyQuotaReset(user);
+    const normalizedUser = await getUser(effectiveUserId);
     const nextResetAt = getNextMonthlyResetAt();
     
     res.json({
@@ -1493,7 +1698,6 @@ apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
     const logsStr = await redis.lrange('usage_logs', 0, 499);
     const logs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
-    rebuildFeatureTotals(logs);
     res.json(logs);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1519,9 +1723,8 @@ apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
 
 apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
   try {
-    const usageFeatureTotals = await getUsageFeatureTotals();
     let cursor = '0';
-    let users: UserRecord[] = [];
+    let users: AdminUserView[] = [];
     do {
       const [nextCursor, keys] = await redis.scan(cursor, { match: 'user:*', count: 100 });
       cursor = nextCursor;
@@ -1531,14 +1734,9 @@ apiRouter.get('/admin/users', checkAdmin, async (req, res) => {
           .filter(Boolean)
           .map(u => typeof u === 'string' ? JSON.parse(u) : u)
           .filter((u: any) => u?.userId && !u.userId.startsWith('web_'))
-          .map((u: any) =>
-            fillMissingFeatureTotals(
-              u,
-              normalizeUserRecord(u, String(u?.userId || '')),
-              usageFeatureTotals,
-            ),
-          );
-        users.push(...allUsers);
+          .map((u: any) => normalizeUserRecord(u, String(u?.userId || '')));
+        const hydratedUsers = await hydrateUsersUsage(allUsers);
+        users.push(...hydratedUsers.map((user) => buildAdminUserView(user)));
       }
     } while (cursor !== '0');
     
@@ -1556,7 +1754,7 @@ apiRouter.post('/admin/users/:userId', checkAdmin, async (req, res) => {
       await ensureUserGroupExists(data.group);
     }
     const updated = await updateUser(userId, data);
-    res.json(updated);
+    res.json(buildAdminUserView(updated));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

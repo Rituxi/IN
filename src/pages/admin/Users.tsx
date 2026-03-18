@@ -4,6 +4,17 @@ import { FolderPlus, RefreshCw, Search, Shield, Star, Users as UsersIcon, X } fr
 
 type UserLevel = 'care' | 'care_plus' | 'king';
 
+interface FeatureUsageStats {
+  monthlyUsedCount: number;
+  totalUsedCount: number;
+  baseLimit: number;
+  baseUsedCount: number;
+  baseRemainingCount: number;
+  extraLimit: number;
+  extraUsedCount: number;
+  extraRemainingCount: number;
+}
+
 interface User {
   userId: string;
   level: UserLevel;
@@ -22,6 +33,10 @@ interface User {
   note: string;
   status: string;
   group: string;
+  usageStats: {
+    ocr: FeatureUsageStats;
+    summary: FeatureUsageStats;
+  };
 }
 
 interface UserConfigDraft {
@@ -61,6 +76,42 @@ function getQuotaDisplay(used: number, limit: number, extra: number, isUnlimited
     return '无限';
   }
   return `${used}/${limit + extra}`;
+}
+
+function getBaseUsed(used: number, limit: number) {
+  return Math.min(Math.max(used, 0), Math.max(limit, 0));
+}
+
+function getExtraUsed(used: number, limit: number) {
+  return Math.max(0, used - Math.max(limit, 0));
+}
+
+function getBaseQuotaDisplay(used: number, limit: number, isUnlimited: boolean) {
+  if (isUnlimited) {
+    return 'Unlimited';
+  }
+  return `${getBaseUsed(used, limit)}/${limit}`;
+}
+
+function getExtraQuotaDisplay(used: number, limit: number, extra: number, isUnlimited: boolean) {
+  if (isUnlimited) {
+    return 'Unlimited';
+  }
+  return `${getExtraUsed(used, limit)}/${Math.max(extra, 0)}`;
+}
+
+function getQuotaSummary(used: number, limit: number, extra: number, isUnlimited: boolean) {
+  if (isUnlimited) {
+    return 'Unlimited';
+  }
+  return `Base ${getBaseQuotaDisplay(used, limit, false)} | Extra ${getExtraQuotaDisplay(used, limit, extra, false)}`;
+}
+
+function formatUsageCount(used: number, limit: number, isUnlimited: boolean) {
+  if (isUnlimited) {
+    return 'Unlimited';
+  }
+  return `${used}/${limit}`;
 }
 
 function getLevelText(level: UserLevel) {
@@ -481,13 +532,17 @@ export default function Users() {
                       <div className="flex items-center gap-3">
                         <span className="w-8 font-medium text-zinc-400">OCR</span>
                         <span className="font-semibold text-zinc-800">
-                          {getQuotaDisplay(user.ocrUsed, user.ocrLimit, user.extraOcrQuota || 0, user.isUnlimited)}
+                          {formatUsageCount(user.usageStats.ocr.baseUsedCount, user.usageStats.ocr.baseLimit, user.isUnlimited)}
                         </span>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="w-8 font-medium text-zinc-400">小结</span>
                         <span className="font-semibold text-zinc-800">
-                          {getQuotaDisplay(user.summaryUsed, user.summaryLimit, user.extraSummaryQuota || 0, user.isUnlimited)}
+                          {formatUsageCount(
+                            user.usageStats.summary.baseUsedCount,
+                            user.usageStats.summary.baseLimit,
+                            user.isUnlimited,
+                          )}
                         </span>
                       </div>
                     </div>
@@ -495,19 +550,27 @@ export default function Users() {
                     <div className="flex flex-col gap-1.5 text-[13px] font-medium">
                       <div className="flex items-center gap-3">
                         <span className="w-8 text-zinc-400">OCR</span>
-                        <span className="text-emerald-600">+{user.extraOcrQuota || 0}</span>
+                        <span className="text-emerald-600">
+                          {formatUsageCount(user.usageStats.ocr.extraUsedCount, user.usageStats.ocr.extraLimit, user.isUnlimited)}
+                        </span>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="w-8 text-zinc-400">小结</span>
-                        <span className="text-blue-600">+{user.extraSummaryQuota || 0}</span>
+                        <span className="text-blue-600">
+                          {formatUsageCount(
+                            user.usageStats.summary.extraUsedCount,
+                            user.usageStats.summary.extraLimit,
+                            user.isUnlimited,
+                          )}
+                        </span>
                       </div>
                     </div>
 
                     <div className="flex flex-col justify-center">
                       <div className="flex items-center gap-2 text-[14px] font-medium text-zinc-700">
-                        <span>{user.totalOcrUsedCount ?? user.ocrUsed}</span>
+                        <span>{user.usageStats.ocr.totalUsedCount}</span>
                         <span className="font-light text-zinc-300">|</span>
-                        <span>{user.totalSummaryUsedCount ?? user.summaryUsed}</span>
+                        <span>{user.usageStats.summary.totalUsedCount}</span>
                       </div>
                     </div>
 
@@ -591,7 +654,12 @@ export default function Users() {
                     <div className="flex flex-col">
                       <span className="text-[16px] font-medium leading-snug text-zinc-900">OCR 补充</span>
                       <span className="mt-0.5 text-[13px] font-normal text-zinc-400">
-                        {getQuotaDisplay(selectedUser.ocrUsed, selectedUser.ocrLimit, selectedUser.extraOcrQuota || 0, selectedUser.isUnlimited)}
+                        {getQuotaSummary(
+                          selectedUser.usageStats.ocr.monthlyUsedCount,
+                          selectedUser.usageStats.ocr.baseLimit,
+                          selectedUser.usageStats.ocr.extraLimit,
+                          selectedUser.isUnlimited,
+                        )}
                       </span>
                     </div>
                     <div className="flex items-center gap-1 rounded-[14px] bg-white/70 px-2.5 py-1 shadow-sm transition-colors group-hover:bg-white">
@@ -614,7 +682,12 @@ export default function Users() {
                     <div className="flex flex-col">
                       <span className="text-[16px] font-medium leading-snug text-zinc-900">小结补充</span>
                       <span className="mt-0.5 text-[13px] font-normal text-zinc-400">
-                        {getQuotaDisplay(selectedUser.summaryUsed, selectedUser.summaryLimit, selectedUser.extraSummaryQuota || 0, selectedUser.isUnlimited)}
+                        {getQuotaSummary(
+                          selectedUser.usageStats.summary.monthlyUsedCount,
+                          selectedUser.usageStats.summary.baseLimit,
+                          selectedUser.usageStats.summary.extraLimit,
+                          selectedUser.isUnlimited,
+                        )}
                       </span>
                     </div>
                     <div className="flex items-center gap-1 rounded-[14px] bg-white/70 px-2.5 py-1 shadow-sm transition-colors group-hover:bg-white">
