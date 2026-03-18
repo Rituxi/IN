@@ -101,7 +101,6 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
       if (!Number.isNaN(serial) && serial >= 0 && serial <= 2958465) {
         const wholeDays = Math.floor(serial);
         if (wholeDays === 60) {
-          // Excel 1900 leap-year bug compatibility day
           return '1900-02-29';
         }
 
@@ -120,11 +119,13 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
     if (match) {
       return `${match[1]}-${String(Number(match[2])).padStart(2, '0')}-${String(Number(match[3])).padStart(2, '0')}`;
     }
+
     return text;
   };
 
   const buildResultFromRows = (rows: any[]): any | null => {
     if (!rows.length) return null;
+
     const title = fileName.replace(/\.(xlsx|xls)$/i, '') || 'Excel 检查报告';
     const dateAliases = ['日期', '检查日期', '报告日期', 'date', 'Date'];
     const recordsByDate = new Map<string, any>();
@@ -136,6 +137,7 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
         unit: pickField(row, ['单位', 'unit', 'Unit']),
         range: pickField(row, ['参考范围', '参考值', '正常范围', 'range', 'referenceRange', 'Range']),
       };
+
       if (!item.name && !item.value && !item.unit && !item.range) continue;
 
       const rowDate = normalizeDate(pickField(row, dateAliases)) || new Date().toISOString().split('T')[0];
@@ -149,6 +151,7 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
           items: [],
         });
       }
+
       recordsByDate.get(rowDate).items.push(item);
     }
 
@@ -171,45 +174,45 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
     aiMap: { dateColumnIndex: number; mappings: Array<{ columnIndex: number; id?: string; name?: string; category?: string }> } | null,
   ): any | null => {
     if (!matrix.length) return null;
-    const toText = (value: any) => String(value ?? '').trim();
 
+    const toText = (value: any) => String(value ?? '').trim();
     let headerRowIndex = -1;
     let bestScore = -1;
-    const scanCount = Math.min(matrix.length, 20);
-    for (let i = 0; i < scanCount; i++) {
+
+    for (let i = 0; i < Math.min(matrix.length, 20); i++) {
       const row = matrix[i] || [];
       const textCells = row.map(toText).filter(Boolean);
       if (textCells.length < 3) continue;
-      const score = textCells.length;
-      if (score > bestScore) {
-        bestScore = score;
+      if (textCells.length > bestScore) {
+        bestScore = textCells.length;
         headerRowIndex = i;
       }
     }
+
     if (headerRowIndex < 0) return null;
 
     const headerRow = matrix[headerRowIndex] || [];
     const headerMap = headerRow.map((cell: any, index: number) => ({ index, text: toText(cell) }));
-    const nonEmptyHeaders = headerMap.filter((h) => h.text);
+    const nonEmptyHeaders = headerMap.filter((header) => header.text);
     if (nonEmptyHeaders.length < 3) return null;
 
     let dateColIndex = aiMap?.dateColumnIndex ?? -1;
     if (!Number.isInteger(dateColIndex) || dateColIndex < 0 || dateColIndex >= headerRow.length) {
-      const detected = headerMap.find((h) => /日期|时间|date|day/i.test(h.text));
+      const detected = headerMap.find((header) => /日期|时间|date|day/i.test(header.text));
       dateColIndex = detected ? detected.index : 0;
     }
 
     let itemColumns = (aiMap?.mappings || [])
-      .filter((m) => Number.isInteger(m.columnIndex) && m.columnIndex >= 0 && m.columnIndex < headerRow.length && m.columnIndex !== dateColIndex)
-      .map((m) => ({
-        columnIndex: m.columnIndex,
-        name: toText(m.name) || toText(headerRow[m.columnIndex]),
+      .filter((mapping) => Number.isInteger(mapping.columnIndex) && mapping.columnIndex >= 0 && mapping.columnIndex < headerRow.length && mapping.columnIndex !== dateColIndex)
+      .map((mapping) => ({
+        columnIndex: mapping.columnIndex,
+        name: toText(mapping.name) || toText(headerRow[mapping.columnIndex]),
       }));
 
     if (!itemColumns.length) {
       itemColumns = headerMap
-        .filter((h) => h.index !== dateColIndex && h.text)
-        .map((h) => ({ columnIndex: h.index, name: h.text }));
+        .filter((header) => header.index !== dateColIndex && header.text)
+        .map((header) => ({ columnIndex: header.index, name: header.text }));
     }
 
     const records: any[] = [];
@@ -220,10 +223,10 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
       if (!dateValue) continue;
 
       const items = itemColumns
-        .map((col) => {
-          const value = toText(rowCells[col.columnIndex]);
+        .map((column) => {
+          const value = toText(rowCells[column.columnIndex]);
           if (!value) return null;
-          return { name: col.name, value, unit: '', range: '' };
+          return { name: column.name, value, unit: '', range: '' };
         })
         .filter((item): item is { name: string; value: string; unit: string; range: string } => !!item);
 
@@ -240,6 +243,7 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
     }
 
     if (!records.length) return null;
+
     return {
       title: records[0].title,
       date: records[0].date,
@@ -257,13 +261,14 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
 
   const matrixRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
   if (!matrixRows.length) {
-    throw new Error('Excel 文件没有数据');
+    throw new Error('Excel 文件没有可用数据');
   }
 
   let aiMap: { dateColumnIndex: number; mappings: Array<{ columnIndex: number; id?: string; name?: string; category?: string }> } | null = null;
   try {
     let headerRowIndex = 0;
     let maxTextCells = -1;
+
     for (let i = 0; i < Math.min(matrixRows.length, 20); i++) {
       const row = matrixRows[i] || [];
       const textCellCount = row.map((cell) => String(cell ?? '').trim()).filter(Boolean).length;
@@ -272,9 +277,10 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
         headerRowIndex = i;
       }
     }
+
     const headers = (matrixRows[headerRowIndex] || [])
       .map((cell, index) => ({ index, text: String(cell ?? '').trim() }))
-      .filter((h) => h.text);
+      .filter((header) => header.text);
 
     if (headers.length > 0) {
       const resp = await fetch('/api/analyze/excel-header', {
@@ -282,6 +288,7 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ headers }),
       });
+
       if (resp.ok) {
         const json = await resp.json();
         aiMap = {
@@ -299,6 +306,7 @@ async function parseExcelToOcrResult(fileName: string, worksheet: XLSX.WorkSheet
 
   throw new Error('未识别到可用的检查项目数据');
 }
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -334,6 +342,7 @@ export default function Home() {
       fileName,
       data,
     };
+
     const updated = [newItem, ...history].slice(0, 50);
     setHistory(updated);
     localStorage.setItem('ocrHistory', JSON.stringify(updated));
@@ -360,6 +369,7 @@ export default function Home() {
 
   const handleUpload = async () => {
     if (!file) return;
+
     setLoading(true);
     setError('');
     setResult(null);
@@ -386,10 +396,12 @@ export default function Home() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ base64, mimeType: file.type, userId, nickname: '网页用户' }),
         });
+
         const json = await res.json();
         if (!res.ok || json.error) {
           throw new Error(json.message || '图片识别失败');
         }
+
         const resultData = { type: 'ocr' as const, data: json };
         setResult(resultData);
         saveToHistory('ocr', file.name, json);
@@ -403,6 +415,7 @@ export default function Home() {
 
   const copyToClipboard = async () => {
     if (!result) return;
+
     const content = result.type === 'ocr' ? formatToMedicalRecords(result.data) : result.data;
     try {
       await navigator.clipboard.writeText(JSON.stringify(content, null, 2));
@@ -415,6 +428,7 @@ export default function Home() {
 
   const exportJSON = () => {
     if (!result || result.type !== 'ocr') return;
+
     const formattedData = formatToMedicalRecords(result.data);
     const blob = new Blob([JSON.stringify(formattedData, null, 2)], {
       type: 'application/json;charset=utf-8;',
@@ -454,18 +468,36 @@ export default function Home() {
       : [];
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-900">
-      <div className="mx-auto max-w-3xl space-y-8">
-        <header className="space-y-4 pt-12 text-center">
-          <h1 className="text-4xl font-semibold tracking-tight">指标笔记·Inno 检查单识别</h1>
-          <p className="text-lg text-slate-500">上传医疗检查图片或 Excel，快速得到结构化 JSON 结果。</p>
+    <div className="min-h-screen px-4 py-8 text-slate-900 sm:px-6">
+      <div className="mx-auto max-w-4xl space-y-8">
+        <header className="overflow-hidden rounded-[32px] border border-white/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.94),rgba(238,248,247,0.92))] p-8 shadow-[0_24px_80px_-36px_rgba(16,33,43,0.42)] sm:p-10">
+          <div className="max-w-2xl space-y-5">
+            <span className="inline-flex rounded-full border border-[rgba(47,127,121,0.16)] bg-white/80 px-4 py-1.5 text-sm font-semibold text-[var(--color-brand-700)]">
+              医疗报告结构化识别
+            </span>
+            <div className="space-y-3">
+              <h1 className="text-4xl font-extrabold tracking-tight text-[var(--color-ink-950)] sm:text-5xl">指标笔记 Inno</h1>
+              <p className="max-w-xl text-base leading-7 text-[var(--color-ink-700)] sm:text-lg">
+                上传医疗检查图片或 Excel，快速得到结构化结果，方便继续存档、导出和后续分析。
+              </p>
+            </div>
+            <div className="grid gap-3 text-sm text-[var(--color-ink-700)] sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">支持图片与 Excel</div>
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">自动提取检查项目</div>
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">一键导出标准 JSON</div>
+            </div>
+          </div>
         </header>
 
-        <div className="rounded-3xl border border-slate-100 bg-white p-8 shadow-sm">
-          <div className="mb-4 flex justify-end">
+        <section className="rounded-[32px] border border-white/70 bg-white/92 p-6 shadow-[0_22px_70px_-34px_rgba(16,33,43,0.34)] sm:p-8">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-[var(--color-ink-950)]">开始识别</h2>
+              <p className="mt-1 text-sm text-[var(--color-ink-700)]">上传文件后即可识别，历史记录会保存在当前浏览器。</p>
+            </div>
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className="flex items-center space-x-2 rounded-xl px-4 py-2 text-slate-600 transition-colors hover:bg-slate-100"
+              className="inline-flex items-center gap-2 self-start rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-800)] transition hover:border-[var(--color-brand-200)] hover:bg-[var(--color-brand-50)]"
             >
               <History size={18} />
               <span>历史记录 ({history.length})</span>
@@ -473,42 +505,43 @@ export default function Home() {
           </div>
 
           {showHistory && (
-            <div className="mb-6 max-h-80 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-6 rounded-[28px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-4">
               <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-medium text-slate-700">最近识别结果</h3>
+                <h3 className="text-sm font-semibold text-[var(--color-ink-900)]">最近识别结果</h3>
                 {history.length > 0 && (
                   <button
                     onClick={clearHistory}
-                    className="flex items-center space-x-1 text-xs text-red-500 hover:text-red-600"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-red-600 transition hover:text-red-700"
                   >
                     <Trash2 size={14} />
                     <span>清空</span>
                   </button>
                 )}
               </div>
+
               {history.length === 0 ? (
-                <p className="py-4 text-center text-sm text-slate-400">暂无历史记录</p>
+                <p className="py-6 text-center text-sm text-[var(--color-ink-600)]">暂时没有历史记录</p>
               ) : (
                 <div className="space-y-2">
                   {history.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between rounded-xl border border-slate-100 bg-white p-3 transition-colors hover:border-slate-200"
+                      className="flex items-center justify-between rounded-2xl border border-white bg-white px-4 py-3 shadow-sm"
                     >
                       <button onClick={() => loadFromHistory(item)} className="flex-1 text-left">
-                        <div className="flex items-center space-x-2">
+                        <div className="flex items-center gap-2">
                           {item.type === 'ocr' ? (
-                            <ImageIcon size={16} className="text-blue-500" />
+                            <ImageIcon size={16} className="text-[var(--color-brand-600)]" />
                           ) : (
-                            <FileText size={16} className="text-emerald-500" />
+                            <FileText size={16} className="text-[var(--color-accent-500)]" />
                           )}
-                          <span className="max-w-[200px] truncate text-sm font-medium">{item.fileName}</span>
+                          <span className="max-w-[220px] truncate text-sm font-semibold text-[var(--color-ink-900)]">{item.fileName}</span>
                         </div>
-                        <p className="mt-1 text-xs text-slate-400">{new Date(item.timestamp).toLocaleString('zh-CN')}</p>
+                        <p className="mt-1 text-xs text-[var(--color-ink-600)]">{new Date(item.timestamp).toLocaleString('zh-CN')}</p>
                       </button>
                       <button
                         onClick={() => deleteHistoryItem(item.id)}
-                        className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                        className="rounded-xl p-2 text-[var(--color-ink-500)] transition hover:bg-red-50 hover:text-red-600"
                       >
                         <X size={16} />
                       </button>
@@ -519,34 +552,39 @@ export default function Home() {
             </div>
           )}
 
-          <div className="relative cursor-pointer rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center transition-colors hover:bg-slate-50">
+          <div className="relative rounded-[28px] border-2 border-dashed border-[var(--color-brand-200)] bg-[linear-gradient(180deg,rgba(238,248,247,0.75),rgba(255,255,255,0.95))] p-10 text-center transition hover:border-[var(--color-brand-500)]">
             <input
               type="file"
               accept="image/*,.xlsx,.xls"
               onChange={handleFileChange}
               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
-            <div className="flex flex-col items-center space-y-4">
-              <div className="rounded-full bg-indigo-50 p-4 text-indigo-600">
+            <div className="flex flex-col items-center gap-4">
+              <div className="rounded-full bg-white p-4 text-[var(--color-brand-600)] shadow-sm">
                 <Upload size={32} />
               </div>
-              <div>
-                <p className="text-lg font-medium">将文件拖到这里，或点击上传</p>
-                <p className="mt-1 text-sm text-slate-500">支持 JPG、PNG、Excel</p>
+              <div className="space-y-1">
+                <p className="text-xl font-bold text-[var(--color-ink-950)]">把文件拖到这里，或者点击上传</p>
+                <p className="text-sm text-[var(--color-ink-700)]">支持 JPG、PNG、XLS、XLSX</p>
               </div>
             </div>
           </div>
 
           {file && (
-            <div className="mt-6 flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-4">
-              <div className="flex items-center space-x-3">
-                {isExcelFile(file) ? <FileText className="text-emerald-500" /> : <ImageIcon className="text-blue-500" />}
-                <span className="max-w-xs truncate font-medium">{file.name}</span>
+            <div className="mt-6 flex flex-col gap-4 rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-white p-3 text-[var(--color-brand-600)] shadow-sm">
+                  {isExcelFile(file) ? <FileText size={20} /> : <ImageIcon size={20} />}
+                </div>
+                <div>
+                  <div className="max-w-xs truncate font-semibold text-[var(--color-ink-900)]">{file.name}</div>
+                  <div className="text-sm text-[var(--color-ink-700)]">{loading ? '正在读取并识别文件，请稍候。' : '文件已准备好，可以开始识别。'}</div>
+                </div>
               </div>
               <button
                 onClick={handleUpload}
                 disabled={loading}
-                className="flex items-center space-x-2 rounded-full bg-indigo-600 px-6 py-2 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--color-brand-600)] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {loading && <Loader2 size={18} className="animate-spin" />}
                 <span>{loading ? '识别中...' : '开始识别'}</span>
@@ -554,25 +592,32 @@ export default function Home() {
             </div>
           )}
 
-          {error && <div className="mt-6 rounded-xl border border-red-100 bg-red-50 p-4 text-red-600">{error}</div>}
-        </div>
+          {error && (
+            <div className="mt-6 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
+              {error}
+            </div>
+          )}
+        </section>
 
         {result && (
-          <div className="animate-in slide-in-from-bottom-4 space-y-6 rounded-3xl border border-slate-100 bg-white p-8 shadow-sm fade-in">
-            <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-semibold">识别结果</h2>
-              <div className="flex items-center space-x-2">
+          <section className="space-y-6 rounded-[32px] border border-white/70 bg-white/94 p-6 shadow-[0_22px_70px_-34px_rgba(16,33,43,0.34)] sm:p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-[var(--color-ink-950)]">识别结果</h2>
+                <p className="mt-1 text-sm text-[var(--color-ink-700)]">结果会按结构化字段展示，方便你检查和导出。</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={copyToClipboard}
-                  className="flex items-center space-x-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-800)] transition hover:border-[var(--color-brand-200)] hover:bg-[var(--color-brand-50)]"
                 >
-                  {copied ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
+                  {copied ? <Check size={16} className="text-emerald-600" /> : <Copy size={16} />}
                   <span>{copied ? '已复制' : '复制 JSON'}</span>
                 </button>
                 {result.type === 'ocr' && (
                   <button
                     onClick={exportJSON}
-                    className="flex items-center space-x-2 rounded-xl bg-indigo-100 px-4 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-200"
+                    className="inline-flex items-center gap-2 rounded-2xl bg-[var(--color-accent-100)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-900)] transition hover:bg-[var(--color-accent-50)]"
                   >
                     <Download size={16} />
                     <span>导出 JSON</span>
@@ -583,55 +628,57 @@ export default function Home() {
 
             {result.type === 'ocr' && (
               <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-slate-500">标题：</span>
-                    <span className="font-medium">{primaryOcrRecord?.title || result.data.title}</span>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-600)]">标题</div>
+                    <div className="mt-2 text-lg font-bold text-[var(--color-ink-950)]">{primaryOcrRecord?.title || result.data.title || '未命名报告'}</div>
                   </div>
-                  <div>
-                    <span className="text-slate-500">日期：</span>
-                    <span className="font-medium">
-                      {hasMultipleOcrRecords ? `共 ${ocrRecords.length} 次（最新：${primaryOcrRecord?.date || ''}）` : primaryOcrRecord?.date}
-                    </span>
+                  <div className="rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-600)]">日期</div>
+                    <div className="mt-2 text-lg font-bold text-[var(--color-ink-950)]">
+                      {hasMultipleOcrRecords ? `共 ${ocrRecords.length} 次，最新：${primaryOcrRecord?.date || '-'}` : primaryOcrRecord?.date || '-'}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-slate-500">医院：</span>
-                    <span className="font-medium">{primaryOcrRecord?.hospital || result.data.hospital}</span>
+                  <div className="rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-600)]">医院</div>
+                    <div className="mt-2 text-base font-semibold text-[var(--color-ink-900)]">{primaryOcrRecord?.hospital || result.data.hospital || '未识别'}</div>
                   </div>
-                  <div>
-                    <span className="text-slate-500">医生：</span>
-                    <span className="font-medium">{primaryOcrRecord?.doctor || result.data.doctor}</span>
+                  <div className="rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-600)]">医生</div>
+                    <div className="mt-2 text-base font-semibold text-[var(--color-ink-900)]">{primaryOcrRecord?.doctor || result.data.doctor || '未识别'}</div>
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-left">
-                    <thead>
-                      <tr className="border-b border-slate-200 text-sm text-slate-500">
-                        {hasMultipleOcrRecords && <th className="py-3 font-medium">日期</th>}
-                        <th className="py-3 font-medium">项目</th>
-                        <th className="py-3 font-medium">结果</th>
-                        <th className="py-3 font-medium">参考范围</th>
-                        <th className="py-3 font-medium">单位</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-sm">
-                      {ocrTableRows.map((item: any, index: number) => (
-                        <tr key={index} className="border-b border-slate-100 last:border-0">
-                          {hasMultipleOcrRecords && <td className="py-3 text-slate-500">{item.recordDate}</td>}
-                          <td className="py-3 font-medium">{item.name}</td>
-                          <td className="py-3">{item.value}</td>
-                          <td className="py-3 text-slate-500">{item.range}</td>
-                          <td className="py-3 text-slate-500">{item.unit}</td>
+                <div className="overflow-hidden rounded-[28px] border border-[var(--color-ink-200)] bg-white">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left">
+                      <thead className="bg-[var(--color-ink-50)] text-sm text-[var(--color-ink-700)]">
+                        <tr className="border-b border-[var(--color-ink-200)]">
+                          {hasMultipleOcrRecords && <th className="px-5 py-4 font-semibold">日期</th>}
+                          <th className="px-5 py-4 font-semibold">项目</th>
+                          <th className="px-5 py-4 font-semibold">结果</th>
+                          <th className="px-5 py-4 font-semibold">参考范围</th>
+                          <th className="px-5 py-4 font-semibold">单位</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--color-ink-100)] text-sm text-[var(--color-ink-900)]">
+                        {ocrTableRows.map((item: any, index: number) => (
+                          <tr key={index} className="transition hover:bg-[var(--color-brand-50)]/60">
+                            {hasMultipleOcrRecords && <td className="px-5 py-4 text-[var(--color-ink-700)]">{item.recordDate || '-'}</td>}
+                            <td className="px-5 py-4 font-semibold">{item.name || '-'}</td>
+                            <td className="px-5 py-4">{item.value || '-'}</td>
+                            <td className="px-5 py-4 text-[var(--color-ink-700)]">{item.range || '-'}</td>
+                            <td className="px-5 py-4 text-[var(--color-ink-700)]">{item.unit || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
                 {(primaryOcrRecord?.notes || result.data.notes) && (
-                  <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
-                    <span className="font-semibold">备注：</span>
+                  <div className="rounded-[24px] border border-[var(--color-accent-100)] bg-[var(--color-accent-50)] p-5 text-sm leading-7 text-[var(--color-ink-900)]">
+                    <span className="font-bold">备注：</span>
                     {primaryOcrRecord?.notes || result.data.notes}
                   </div>
                 )}
@@ -640,14 +687,15 @@ export default function Home() {
 
             {result.type === 'summary' && (
               <div className="space-y-4">
-                <div className="rounded-2xl bg-indigo-50 p-6 leading-relaxed text-indigo-900">{result.data.summary}</div>
-                <div className="text-right text-sm text-slate-500">剩余额度：{result.data.quota?.remaining}</div>
+                <div className="rounded-[24px] border border-[var(--color-brand-100)] bg-[var(--color-brand-50)] p-6 leading-8 text-[var(--color-ink-900)]">
+                  {result.data.summary}
+                </div>
+                <div className="text-right text-sm text-[var(--color-ink-700)]">剩余额度：{result.data.quota?.remaining}</div>
               </div>
             )}
-          </div>
+          </section>
         )}
       </div>
     </div>
   );
 }
-

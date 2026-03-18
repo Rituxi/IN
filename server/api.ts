@@ -556,7 +556,7 @@ function normalizeDateValue(value: unknown): string {
   const raw = toText(value).trim();
   if (!raw) return new Date().toISOString().slice(0, 10);
 
-  const dateMatch = raw.match(/(\d{4})[\/.\-年](\d{1,2})[\/.\-月](\d{1,2})/);
+  const dateMatch = raw.match(/(\d{4})[\/.\-?](\d{1,2})[\/.\-?](\d{1,2})/);
   if (dateMatch) {
     return formatDate(Number(dateMatch[1]), Number(dateMatch[2]), Number(dateMatch[3]));
   }

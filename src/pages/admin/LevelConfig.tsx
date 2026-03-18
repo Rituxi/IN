@@ -28,9 +28,9 @@ const defaultSummaryPrompts: SummaryPrompts = {
 };
 
 const levelInfo = {
-  care: { label: '基础版（Care）', icon: Shield, color: 'slate', desc: '适合普通用户' },
-  care_plus: { label: '进阶版（Care+）', icon: Star, color: 'indigo', desc: '适合高频用户' },
-  king: { label: '旗舰版（King）', icon: Crown, color: 'amber', desc: '适合重度用户' },
+  care: { label: 'Care 基础版', icon: Shield, desc: '适合普通用户，额度较基础。', panelTone: 'border-[var(--color-ink-200)] bg-[var(--color-ink-50)]' },
+  care_plus: { label: 'Care+ 进阶版', icon: Star, desc: '适合高频用户，额度更高。', panelTone: 'border-sky-200 bg-sky-50/70' },
+  king: { label: 'King 无限版', icon: Crown, desc: '适合重度用户，强调无限和更高模型。', panelTone: 'border-amber-200 bg-amber-50/70' },
 };
 
 export default function LevelConfigPage() {
@@ -178,113 +178,109 @@ export default function LevelConfigPage() {
     }
   };
 
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; border: string; text: string; iconBg: string }> = {
-      slate: { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700', iconBg: 'bg-slate-100' },
-      indigo: { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', iconBg: 'bg-indigo-100' },
-      amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', iconBg: 'bg-amber-100' },
-    };
-    return colors[color] || colors.slate;
-  };
-
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <RefreshCw size={32} className="animate-spin text-slate-400" />
+      <div className="flex h-64 items-center justify-center text-[var(--color-ink-700)]">
+        <RefreshCw size={28} className="animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">用户配置</h2>
-          <p className="mt-2 text-slate-500">管理各等级的 OCR/月额度、小结/月额度与模型配置。</p>
+    <div className="space-y-6">
+      <section className="flex flex-col gap-4 rounded-[28px] bg-[linear-gradient(135deg,rgba(47,127,121,0.12),rgba(255,255,255,0.96))] p-6 sm:flex-row sm:items-end sm:justify-between">
+        <div className="max-w-2xl">
+          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-brand-700)]">Level Configuration</div>
+          <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)]">等级配置</h2>
+          <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">统一管理各等级的 OCR 配额、智能小结配额、模型和小结提示词。</p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center gap-3">
           <button
             onClick={reloadAll}
-            className="rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 transition-colors hover:bg-slate-50"
+            className="rounded-2xl border border-white/80 bg-white/90 p-3 text-[var(--color-ink-900)] transition hover:bg-white"
             title="刷新"
           >
-            <RefreshCw size={20} />
+            <RefreshCw size={18} />
           </button>
           <button
             onClick={handleSaveLevelConfig}
             disabled={savingLevel}
-            className="flex items-center space-x-2 rounded-xl bg-indigo-600 px-4 py-2.5 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-2xl bg-[var(--color-brand-600)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)] disabled:opacity-60"
           >
-            <Save size={18} />
-            <span>{savingLevel ? '保存中...' : '保存等级配置'}</span>
+            <Save size={16} />
+            {savingLevel ? '保存中...' : '保存等级配置'}
           </button>
         </div>
-      </div>
+      </section>
 
       {levelMessage && (
-        <div className={`rounded-xl p-4 ${levelMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+        <div
+          className={[
+            'rounded-2xl px-4 py-3 text-sm font-medium',
+            levelMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600',
+          ].join(' ')}
+        >
           {levelMessage.text}
         </div>
       )}
 
-      <div className="grid gap-6">
+      <section className="grid gap-5">
         {Object.entries(levelInfo).map(([level, info]) => {
           const config = configs[level];
           const Icon = info.icon;
-          const colorClasses = getColorClasses(info.color);
 
           return (
-            <div key={level} className={`rounded-2xl border-2 p-6 ${colorClasses.bg} ${colorClasses.border}`}>
-              <div className="mb-6 flex items-center space-x-3">
-                <div className={`rounded-xl p-2.5 ${colorClasses.iconBg}`}>
-                  <Icon size={24} className={colorClasses.text} />
+            <article key={level} className={`rounded-[30px] border p-6 shadow-[0_18px_60px_-42px_rgba(16,33,43,0.28)] ${info.panelTone}`}>
+              <div className="mb-6 flex items-start gap-4">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-[var(--color-ink-900)] shadow-sm">
+                  <Icon size={24} />
                 </div>
                 <div>
-                  <h3 className={`text-xl font-semibold ${colorClasses.text}`}>{info.label}</h3>
-                  <p className="text-sm text-slate-500">{info.desc}</p>
+                  <h3 className="text-xl font-bold text-[var(--color-ink-950)]">{info.label}</h3>
+                  <p className="mt-1 text-sm text-[var(--color-ink-700)]">{info.desc}</p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                <div className="space-y-4">
-                  <h4 className="flex items-center space-x-2 font-medium text-slate-700">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="rounded-[24px] border border-white/80 bg-white/85 p-5">
+                  <h4 className="flex items-center gap-2 font-semibold text-[var(--color-ink-900)]">
                     <Settings size={16} />
-                    <span>额度配置</span>
+                    额度配置
                   </h4>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-sm text-slate-500">OCR / 月</label>
+                      <label className="mb-2 block text-sm text-[var(--color-ink-700)]">OCR / 月</label>
                       <input
                         type="number"
                         value={config?.ocrLimit || 0}
                         onChange={(event) => updateConfig(level, 'ocrLimit', Number.parseInt(event.target.value, 10) || 0)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                       />
                     </div>
                     <div>
-                      <label className="mb-1 block text-sm text-slate-500">小结 / 月</label>
+                      <label className="mb-2 block text-sm text-[var(--color-ink-700)]">小结 / 月</label>
                       <input
                         type="number"
                         value={config?.summaryLimit || 0}
                         onChange={(event) => updateConfig(level, 'summaryLimit', Number.parseInt(event.target.value, 10) || 0)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                       />
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <h4 className="flex items-center space-x-2 font-medium text-slate-700">
+                <div className="rounded-[24px] border border-white/80 bg-white/85 p-5">
+                  <h4 className="flex items-center gap-2 font-semibold text-[var(--color-ink-900)]">
                     <Settings size={16} />
-                    <span>模型配置</span>
+                    模型配置
                   </h4>
-                  <div className="space-y-3">
+                  <div className="mt-4 space-y-4">
                     <div>
-                      <label className="mb-1 block text-sm text-slate-500">OCR 模型</label>
+                      <label className="mb-2 block text-sm text-[var(--color-ink-700)]">OCR 模型</label>
                       <select
                         value={config?.ocrModel || ''}
                         onChange={(event) => updateConfig(level, 'ocrModel', event.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                       >
                         {configData?.supportedModels.map((model) => (
                           <option key={model} value={model}>
@@ -294,11 +290,11 @@ export default function LevelConfigPage() {
                       </select>
                     </div>
                     <div>
-                      <label className="mb-1 block text-sm text-slate-500">小结模型</label>
+                      <label className="mb-2 block text-sm text-[var(--color-ink-700)]">小结模型</label>
                       <select
                         value={config?.summaryModel || ''}
                         onChange={(event) => updateConfig(level, 'summaryModel', event.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                       >
                         {configData?.supportedModels.map((model) => (
                           <option key={model} value={model}>
@@ -310,66 +306,70 @@ export default function LevelConfigPage() {
                   </div>
                 </div>
               </div>
-            </div>
+            </article>
           );
         })}
-      </div>
+      </section>
 
-      <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6">
-        <div className="flex items-center space-x-2 text-slate-900">
+      <section className="rounded-[30px] border border-[var(--color-ink-200)] bg-white p-6 shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
+        <div className="flex items-center gap-2 text-[var(--color-ink-950)]">
           <MessageSquareText size={20} />
-          <h3 className="text-xl font-semibold">智能小结提示词</h3>
+          <h3 className="text-xl font-bold">智能小结提示词</h3>
         </div>
-        <p className="text-sm text-slate-500">
-          当前系统使用一个提示词插槽（`slot1`），小程序端继续传 `promptSlot: "slot1"` 即可。
-        </p>
+        <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">当前系统先使用一个提示词插槽 `slot1`，后续如果扩展多个槽位，也能继续沿用这套结构。</p>
 
         {slotMessage && (
-          <div className={`rounded-xl p-3 text-sm ${slotMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+          <div
+            className={[
+              'mt-4 rounded-2xl px-4 py-3 text-sm font-medium',
+              slotMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600',
+            ].join(' ')}
+          >
             {slotMessage.text}
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-5">
-          <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-center justify-between">
-              <h4 className="font-semibold text-slate-800">slot1</h4>
-              <span className="text-xs text-slate-500">{summaryPrompts.slot1.prompt.trim() ? '已配置' : '未配置'}</span>
-            </div>
+        <div className="mt-5 rounded-[26px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
+          <div className="flex items-center justify-between">
+            <h4 className="font-semibold text-[var(--color-ink-950)]">slot1</h4>
+            <span className="text-xs font-semibold text-[var(--color-ink-700)]">{summaryPrompts.slot1.prompt.trim() ? '已配置' : '未配置'}</span>
+          </div>
 
+          <div className="mt-4 grid gap-4">
             <div>
-              <label className="mb-1 block text-xs text-slate-500">名称</label>
+              <label className="mb-2 block text-sm text-[var(--color-ink-700)]">名称</label>
               <input
                 value={summaryPrompts.slot1.name}
                 onChange={(event) => updatePromptSlot('name', event.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-white px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
               />
             </div>
 
             <div>
-              <label className="mb-1 block text-xs text-slate-500">说明</label>
+              <label className="mb-2 block text-sm text-[var(--color-ink-700)]">说明</label>
               <input
                 value={summaryPrompts.slot1.description}
                 onChange={(event) => updatePromptSlot('description', event.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-white px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
               />
             </div>
 
             <div>
-              <label className="mb-1 block text-xs text-slate-500">提示词</label>
+              <label className="mb-2 block text-sm text-[var(--color-ink-700)]">提示词</label>
               <textarea
                 rows={10}
                 value={summaryPrompts.slot1.prompt}
                 onChange={(event) => updatePromptSlot('prompt', event.target.value)}
-                className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full resize-y rounded-2xl border border-[var(--color-ink-200)] bg-white px-4 py-3 outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
               />
             </div>
 
             <button
               onClick={handleSavePromptSlot}
               disabled={savingSlot}
-              className="w-full rounded-lg bg-indigo-600 py-2.5 text-white transition-colors hover:bg-indigo-700 disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--color-brand-600)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)] disabled:opacity-60"
             >
+              <Save size={16} />
               {savingSlot ? '保存中...' : '保存提示词'}
             </button>
           </div>

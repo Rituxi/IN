@@ -1,7 +1,58 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-brand-50: #eef8f7;
+  --color-brand-100: #d7efec;
+  --color-brand-200: #afdfd9;
+  --color-brand-500: #2f7f79;
+  --color-brand-600: #256964;
+  --color-brand-700: #1c524d;
+
+  --color-accent-50: #fff8ec;
+  --color-accent-100: #fdecc8;
+  --color-accent-500: #d59528;
+
+  --color-ink-950: #10212b;
+  --color-ink-900: #18303c;
+  --color-ink-800: #284553;
+  --color-ink-700: #45606d;
+  --color-ink-600: #637b87;
+  --color-ink-500: #8ea0a8;
+  --color-ink-200: #dbe4e8;
+  --color-ink-100: #edf2f4;
+  --color-ink-50: #f7fafb;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    background:
+      radial-gradient(circle at top, rgba(47, 127, 121, 0.12), transparent 30%),
+      linear-gradient(180deg, #f7fafb 0%, #f2f6f7 55%, #edf3f5 100%);
+    color: var(--color-ink-950);
+    font-family: var(--font-sans);
+  }
+
+  body {
+    min-height: 100vh;
+    margin: 0;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  ::selection {
+    background: rgba(47, 127, 121, 0.18);
+  }
 }

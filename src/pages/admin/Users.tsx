@@ -34,6 +34,40 @@ function getQuotaDraftValue(draft: QuotaDraft | undefined, type: QuotaType) {
   return draft?.[type] ?? '';
 }
 
+function getLevelBadge(level: UserLevel) {
+  if (level === 'king') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+        <Crown size={14} />
+        King
+      </span>
+    );
+  }
+
+  if (level === 'care_plus') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">
+        <Sparkles size={14} />
+        Care+
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-3 py-1 text-xs font-semibold text-[var(--color-ink-800)]">
+      <Shield size={14} />
+      Care
+    </span>
+  );
+}
+
+function getQuotaText(used: number, limit: number, extra: number, isUnlimited: boolean) {
+  if (isUnlimited) {
+    return '无限';
+  }
+  return `${used}/${limit + extra}`;
+}
+
 export default function Users() {
   const [users, setUsers] = useState<User[]>([]);
   const [groups, setGroups] = useState<string[]>([DEFAULT_GROUP]);
@@ -118,6 +152,7 @@ export default function Users() {
           return Array.from(next);
         });
       }
+
       return true;
     } catch (error) {
       console.error(error);
@@ -148,13 +183,12 @@ export default function Users() {
     const quota = Number(draftValue || 0);
 
     if (!Number.isFinite(quota) || quota <= 0) {
-      alert(`请输入大于 0 的${type === 'ocr' ? 'OCR' : '智能小结'}额度。`);
+      alert(`请输入大于 0 的${type === 'ocr' ? ' OCR ' : '智能小结 '}额度。`);
       return;
     }
 
     const field = type === 'ocr' ? 'extraOcrQuota' : 'extraSummaryQuota';
     const currentValue = type === 'ocr' ? user.extraOcrQuota || 0 : user.extraSummaryQuota || 0;
-
     const success = await handleUpdateUser(user.userId, { [field]: currentValue + quota } as Partial<User>);
 
     if (!success) {
@@ -238,142 +272,77 @@ export default function Users() {
     });
   }, [filterGroup, filterLevel, noteDrafts, search, users]);
 
-  const getLevelBadge = (level: UserLevel) => {
-    if (level === 'king') {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-          <Crown size={14} />
-          <span>King</span>
-        </span>
-      );
-    }
-
-    if (level === 'care_plus') {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">
-          <Sparkles size={14} />
-          <span>Care+</span>
-        </span>
-      );
-    }
-
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-        <Shield size={14} />
-        <span>Care</span>
-      </span>
-    );
-  };
-
-  const getQuotaText = (used: number, limit: number, extra: number, isUnlimited: boolean) => {
-    if (isUnlimited) {
-      return '无限';
-    }
-    return `${used}/${limit + extra}`;
-  };
-
   if (loading) {
-    return <div className="p-8 text-center text-slate-500">加载中...</div>;
+    return <div className="p-10 text-center text-sm text-[var(--color-ink-700)]">正在加载用户数据...</div>;
   }
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">用户管理</h2>
-          <p className="mt-2 text-slate-500">
-            共 {users.length} 个用户，当前显示 {filteredUsers.length} 个。
-          </p>
+    <div className="space-y-6">
+      <section className="flex flex-col gap-4 rounded-[28px] bg-[linear-gradient(135deg,rgba(47,127,121,0.12),rgba(255,255,255,0.96))] p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-brand-700)]">Users</div>
+            <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)]">用户管理</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">
+              共 {users.length} 个用户，当前显示 {filteredUsers.length} 个。你可以在这里调整等级、补充额度、管理分组和备注。
+            </p>
+          </div>
+          <button
+            onClick={reloadPageData}
+            className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/80 bg-white/90 px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-900)] transition hover:bg-white"
+          >
+            <RefreshCw size={16} />
+            刷新
+          </button>
         </div>
-        <button
-          onClick={reloadPageData}
-          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-        >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          刷新
-        </button>
-      </div>
 
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-        <button
-          onClick={() => setFilterLevel('all')}
-          className={`rounded-3xl border p-5 text-left transition-all ${
-            filterLevel === 'all'
-              ? 'border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-900/10'
-              : 'border-slate-200 bg-white hover:border-slate-300'
-          }`}
-        >
-          <div className="mb-3 flex items-center gap-2">
-            <UsersIcon size={18} className={filterLevel === 'all' ? 'text-white' : 'text-slate-500'} />
-            <span className={`text-sm font-medium ${filterLevel === 'all' ? 'text-white' : 'text-slate-500'}`}>全部用户</span>
-          </div>
-          <div className={`text-2xl font-bold ${filterLevel === 'all' ? 'text-white' : 'text-slate-900'}`}>{levelStats.all}</div>
-        </button>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { key: 'all', label: '全部用户', value: levelStats.all, icon: UsersIcon, activeTone: 'bg-[var(--color-ink-950)] text-white border-[var(--color-ink-950)]' },
+            { key: 'care', label: 'Care', value: levelStats.care, icon: Shield, activeTone: 'bg-[var(--color-ink-900)] text-white border-[var(--color-ink-900)]' },
+            { key: 'care_plus', label: 'Care+', value: levelStats.care_plus, icon: Star, activeTone: 'bg-sky-600 text-white border-sky-600' },
+            { key: 'king', label: 'King', value: levelStats.king, icon: Crown, activeTone: 'bg-amber-500 text-white border-amber-500' },
+          ].map((card) => {
+            const Icon = card.icon;
+            const isActive = filterLevel === card.key;
+            return (
+              <button
+                key={card.key}
+                onClick={() => setFilterLevel(card.key as UserLevel | 'all')}
+                className={[
+                  'rounded-[26px] border px-5 py-5 text-left transition',
+                  isActive ? card.activeTone : 'border-[var(--color-ink-200)] bg-white hover:border-[var(--color-brand-200)]',
+                ].join(' ')}
+              >
+                <div className="mb-4 flex items-center gap-2">
+                  <Icon size={18} className={isActive ? 'text-current' : 'text-[var(--color-ink-600)]'} />
+                  <span className={isActive ? 'text-sm font-semibold text-current' : 'text-sm font-semibold text-[var(--color-ink-700)]'}>{card.label}</span>
+                </div>
+                <div className={isActive ? 'text-3xl font-extrabold text-current' : 'text-3xl font-extrabold text-[var(--color-ink-950)]'}>{card.value}</div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
-        <button
-          onClick={() => setFilterLevel('care')}
-          className={`rounded-3xl border p-5 text-left transition-all ${
-            filterLevel === 'care'
-              ? 'border-slate-700 bg-slate-700 text-white shadow-lg shadow-slate-700/10'
-              : 'border-slate-200 bg-white hover:border-slate-300'
-          }`}
-        >
-          <div className="mb-3 flex items-center gap-2">
-            <Shield size={18} className={filterLevel === 'care' ? 'text-white' : 'text-slate-500'} />
-            <span className={`text-sm font-medium ${filterLevel === 'care' ? 'text-white' : 'text-slate-500'}`}>Care</span>
-          </div>
-          <div className={`text-2xl font-bold ${filterLevel === 'care' ? 'text-white' : 'text-slate-900'}`}>{levelStats.care}</div>
-        </button>
-
-        <button
-          onClick={() => setFilterLevel('care_plus')}
-          className={`rounded-3xl border p-5 text-left transition-all ${
-            filterLevel === 'care_plus'
-              ? 'border-sky-600 bg-sky-600 text-white shadow-lg shadow-sky-600/15'
-              : 'border-slate-200 bg-white hover:border-sky-300'
-          }`}
-        >
-          <div className="mb-3 flex items-center gap-2">
-            <Star size={18} className={filterLevel === 'care_plus' ? 'text-white' : 'text-sky-500'} />
-            <span className={`text-sm font-medium ${filterLevel === 'care_plus' ? 'text-white' : 'text-slate-500'}`}>Care+</span>
-          </div>
-          <div className={`text-2xl font-bold ${filterLevel === 'care_plus' ? 'text-white' : 'text-slate-900'}`}>{levelStats.care_plus}</div>
-        </button>
-
-        <button
-          onClick={() => setFilterLevel('king')}
-          className={`rounded-3xl border p-5 text-left transition-all ${
-            filterLevel === 'king'
-              ? 'border-amber-500 bg-amber-500 text-white shadow-lg shadow-amber-500/15'
-              : 'border-slate-200 bg-white hover:border-amber-300'
-          }`}
-        >
-          <div className="mb-3 flex items-center gap-2">
-            <Crown size={18} className={filterLevel === 'king' ? 'text-white' : 'text-amber-500'} />
-            <span className={`text-sm font-medium ${filterLevel === 'king' ? 'text-white' : 'text-slate-500'}`}>King</span>
-          </div>
-          <div className={`text-2xl font-bold ${filterLevel === 'king' ? 'text-white' : 'text-slate-900'}`}>{levelStats.king}</div>
-        </button>
-      </div>
-
-      <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_-30px_rgba(15,23,42,0.25)]">
-        <div className="border-b border-slate-100 bg-[linear-gradient(135deg,rgba(248,250,252,0.95),rgba(241,245,249,0.85))] p-5">
+      <section className="overflow-hidden rounded-[30px] border border-[var(--color-ink-200)] bg-white shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
+        <div className="border-b border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-5">
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_220px_minmax(0,1fr)]">
             <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--color-ink-500)]" size={18} />
               <input
                 type="text"
-                placeholder="搜索用户 ID、备注、分组"
+                placeholder="搜索用户 ID、备注或分组"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                className="w-full rounded-2xl border border-white/70 bg-white px-11 py-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-sky-200 focus:ring-4 focus:ring-sky-100"
+                className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-white px-11 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
               />
             </div>
 
             <select
               value={filterGroup}
               onChange={(event) => setFilterGroup(event.target.value)}
-              className="rounded-2xl border border-white/70 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-sky-200 focus:ring-4 focus:ring-sky-100"
+              className="rounded-2xl border border-[var(--color-ink-200)] bg-white px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
             >
               <option value="all">全部分组</option>
               {groups.map((group) => (
@@ -389,12 +358,12 @@ export default function Users() {
                 value={newGroup}
                 onChange={(event) => setNewGroup(event.target.value)}
                 placeholder="新建自定义分组"
-                className="min-w-0 flex-1 rounded-2xl border border-white/70 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-sky-200 focus:ring-4 focus:ring-sky-100"
+                className="min-w-0 flex-1 rounded-2xl border border-[var(--color-ink-200)] bg-white px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
               />
               <button
                 onClick={handleCreateGroup}
                 disabled={creatingGroup}
-                className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-2xl bg-[var(--color-brand-600)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {creatingGroup ? '创建中...' : '新建分组'}
               </button>
@@ -403,39 +372,39 @@ export default function Users() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="min-w-[1680px] w-full border-collapse text-left">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                <th className="whitespace-nowrap px-6 py-4">用户 ID</th>
-                <th className="whitespace-nowrap px-6 py-4">分组</th>
-                <th className="whitespace-nowrap px-6 py-4">等级</th>
-                <th className="whitespace-nowrap px-6 py-4">OCR 额度</th>
-                <th className="whitespace-nowrap px-6 py-4">小结额度</th>
-                <th className="whitespace-nowrap px-6 py-4">额外额度</th>
-                <th className="whitespace-nowrap px-6 py-4">累计使用</th>
-                <th className="whitespace-nowrap px-6 py-4">加入日期</th>
-                <th className="whitespace-nowrap px-6 py-4 text-right">操作</th>
+          <table className="min-w-[1680px] w-full text-left">
+            <thead className="bg-white text-xs font-semibold uppercase tracking-[0.08em] text-[var(--color-ink-600)]">
+              <tr className="border-b border-[var(--color-ink-200)]">
+                <th className="px-6 py-4">用户 ID</th>
+                <th className="px-6 py-4">分组</th>
+                <th className="px-6 py-4">等级</th>
+                <th className="px-6 py-4">OCR 额度</th>
+                <th className="px-6 py-4">小结额度</th>
+                <th className="px-6 py-4">额外额度</th>
+                <th className="px-6 py-4">累计使用</th>
+                <th className="px-6 py-4">加入日期</th>
+                <th className="px-6 py-4 text-right">操作</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
+            <tbody className="divide-y divide-[var(--color-ink-100)] text-sm text-[var(--color-ink-900)]">
               {filteredUsers.map((user) => {
                 const isSaving = savingUserId === user.userId;
                 const currentGroup = user.group || DEFAULT_GROUP;
                 const noteDraft = noteDrafts[user.userId] ?? user.note ?? '';
 
                 return (
-                  <tr key={user.userId} className="transition-colors hover:bg-slate-50/70">
+                  <tr key={user.userId} className="align-top transition hover:bg-[var(--color-brand-50)]/45">
                     <td className="max-w-[220px] px-6 py-4">
-                      <div className="truncate font-semibold text-slate-900" title={user.userId}>
+                      <div className="truncate font-semibold" title={user.userId}>
                         {user.userId}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-6 py-4">
+                    <td className="px-6 py-4">
                       <select
                         value={currentGroup}
                         disabled={isSaving}
                         onChange={(event) => handleUpdateUser(user.userId, { group: event.target.value })}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none transition focus:border-sky-200 focus:ring-4 focus:ring-sky-100"
+                        className="rounded-xl border border-[var(--color-ink-200)] bg-white px-3 py-2 text-xs text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                       >
                         {groups.map((group) => (
                           <option key={group} value={group}>
@@ -444,24 +413,18 @@ export default function Users() {
                         ))}
                       </select>
                     </td>
-                    <td className="whitespace-nowrap px-6 py-4">{getLevelBadge(user.level)}</td>
-                    <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-800">
-                      {getQuotaText(user.ocrUsed, user.ocrLimit, user.extraOcrQuota || 0, user.isUnlimited)}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-800">
-                      {getQuotaText(user.summaryUsed, user.summaryLimit, user.extraSummaryQuota || 0, user.isUnlimited)}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-slate-600">
-                      <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 font-semibold text-emerald-700">
-                        +{user.extraOcrQuota || 0} | +{user.extraSummaryQuota || 0}
+                    <td className="px-6 py-4">{getLevelBadge(user.level)}</td>
+                    <td className="px-6 py-4 font-semibold">{getQuotaText(user.ocrUsed, user.ocrLimit, user.extraOcrQuota || 0, user.isUnlimited)}</td>
+                    <td className="px-6 py-4 font-semibold">{getQuotaText(user.summaryUsed, user.summaryLimit, user.extraSummaryQuota || 0, user.isUnlimited)}</td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        +{user.extraOcrQuota || 0} / +{user.extraSummaryQuota || 0}
                       </span>
                     </td>
-                    <td className="whitespace-nowrap px-6 py-4 font-semibold text-slate-900">
-                      {user.ocrUsed} | {user.summaryUsed}
+                    <td className="px-6 py-4 font-semibold">
+                      {user.ocrUsed} / {user.summaryUsed}
                     </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-slate-500">
-                      {format(new Date(user.firstUsedAt), 'yyyy-MM-dd')}
-                    </td>
+                    <td className="px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(user.firstUsedAt), 'yyyy-MM-dd')}</td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-3 whitespace-nowrap">
                         <div className="inline-flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-2 py-1.5">
@@ -473,7 +436,7 @@ export default function Users() {
                             onChange={(event) => handleQuotaDraftChange(user.userId, 'ocr', event.target.value)}
                             placeholder="加额"
                             disabled={isSaving}
-                            className="w-16 rounded-xl border border-emerald-200 bg-white px-2.5 py-1.5 text-center text-xs text-slate-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100"
+                            className="w-16 rounded-xl border border-emerald-200 bg-white px-2.5 py-1.5 text-center text-xs outline-none transition focus:border-emerald-300"
                           />
                           <button
                             onClick={() => handleAddQuota(user, 'ocr')}
@@ -494,7 +457,7 @@ export default function Users() {
                             onChange={(event) => handleQuotaDraftChange(user.userId, 'summary', event.target.value)}
                             placeholder="加额"
                             disabled={isSaving}
-                            className="w-16 rounded-xl border border-sky-200 bg-white px-2.5 py-1.5 text-center text-xs text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                            className="w-16 rounded-xl border border-sky-200 bg-white px-2.5 py-1.5 text-center text-xs outline-none transition focus:border-sky-300"
                           />
                           <button
                             onClick={() => handleAddQuota(user, 'summary')}
@@ -506,19 +469,19 @@ export default function Users() {
                           </button>
                         </div>
 
-                        <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-2 py-1.5">
+                        <div className="inline-flex items-center gap-2 rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-2 py-1.5">
                           <input
                             type="text"
                             value={noteDraft}
                             onChange={(event) => handleNoteDraftChange(user.userId, event.target.value)}
                             placeholder="编辑备注"
                             disabled={isSaving}
-                            className="w-40 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-200"
+                            className="w-40 rounded-xl border border-[var(--color-ink-200)] bg-white px-3 py-1.5 text-xs outline-none transition focus:border-[var(--color-brand-500)]"
                           />
                           <button
                             onClick={() => handleSaveNote(user)}
                             disabled={isSaving}
-                            className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="inline-flex items-center gap-1 rounded-xl bg-[var(--color-ink-950)] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[var(--color-ink-900)] disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Check size={14} />
                             保存
@@ -529,7 +492,7 @@ export default function Users() {
                           value={user.level}
                           disabled={isSaving}
                           onChange={(event) => handleUpdateUser(user.userId, { level: event.target.value as UserLevel })}
-                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none transition focus:border-sky-200 focus:ring-4 focus:ring-sky-100"
+                          className="rounded-2xl border border-[var(--color-ink-200)] bg-white px-3 py-2 text-xs font-semibold text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
                         >
                           <option value="care">Care</option>
                           <option value="care_plus">Care+</option>
@@ -543,9 +506,9 @@ export default function Users() {
 
               {filteredUsers.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={9} className="px-6 py-14 text-center text-slate-500">
+                  <td colSpan={9} className="px-6 py-16 text-center text-[var(--color-ink-700)]">
                     <div className="flex flex-col items-center gap-3">
-                      <UsersIcon size={40} className="text-slate-300" />
+                      <UsersIcon size={40} className="text-[var(--color-ink-400)]" />
                       <span>没有找到匹配的用户。</span>
                     </div>
                   </td>
@@ -554,7 +517,7 @@ export default function Users() {
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

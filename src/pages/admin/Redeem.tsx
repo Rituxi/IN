@@ -1,11 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
-import { Key, Trash2, Copy, RefreshCw, Plus } from 'lucide-react';
+import { Copy, Key, Plus, RefreshCw, Trash2 } from 'lucide-react';
+
+interface RedeemCode {
+  code: string;
+  type: 'care_plus' | 'king';
+  status: 'unused' | 'used';
+  createdAt: string;
+  expiredAt: string;
+}
 
 export default function Redeem() {
-  const [codes, setCodes] = useState<any[]>([]);
+  const [codes, setCodes] = useState<RedeemCode[]>([]);
   const [loading, setLoading] = useState(true);
-  const [generateType, setGenerateType] = useState('care_plus');
+  const [generateType, setGenerateType] = useState<'care_plus' | 'king'>('care_plus');
   const [generateCount, setGenerateCount] = useState(1);
 
   const fetchCodes = async () => {
@@ -13,11 +21,11 @@ export default function Redeem() {
     try {
       const token = localStorage.getItem('adminToken');
       const res = await fetch('/api/admin/redeem', {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        setCodes(data);
+        setCodes(Array.isArray(data) ? data : []);
       }
     } catch (err) {
       console.error(err);
@@ -35,12 +43,13 @@ export default function Redeem() {
       const token = localStorage.getItem('adminToken');
       const res = await fetch('/api/admin/redeem', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}` 
+          Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ type: generateType, count: generateCount })
+        body: JSON.stringify({ type: generateType, count: generateCount }),
       });
+
       if (res.ok) {
         fetchCodes();
       }
@@ -50,12 +59,13 @@ export default function Redeem() {
   };
 
   const handleDelete = async (code: string) => {
-    if (!confirm('确定要删除这个兑换码吗？')) return;
+    if (!window.confirm('确定要删除这个兑换码吗？')) return;
+
     try {
       const token = localStorage.getItem('adminToken');
       const res = await fetch(`/api/admin/redeem/${code}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         fetchCodes();
@@ -65,116 +75,134 @@ export default function Redeem() {
     }
   };
 
-  const handleCopy = (code: string) => {
-    navigator.clipboard.writeText(code);
-    alert('已复制到剪贴板');
+  const handleCopy = async (code: string) => {
+    await navigator.clipboard.writeText(code);
+    alert('兑换码已复制到剪贴板。');
   };
 
-  const unusedCodes = codes.filter(c => c.status === 'unused');
+  const unusedCodes = codes.filter((code) => code.status === 'unused');
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">兑换码管理</h2>
-          <p className="text-slate-500 mt-2">生成和管理等级兑换码</p>
+    <div className="space-y-6">
+      <section className="flex flex-col gap-4 rounded-[28px] bg-[linear-gradient(135deg,rgba(255,248,236,0.92),rgba(255,255,255,0.96))] p-6 sm:flex-row sm:items-end sm:justify-between">
+        <div className="max-w-2xl">
+          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-700">Redeem Codes</div>
+          <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--color-ink-950)]">兑换码管理</h2>
+          <p className="mt-2 text-sm leading-6 text-[var(--color-ink-700)]">批量生成并维护会员升级兑换码，当前仅展示还可使用的兑换码。</p>
         </div>
-        <div className="flex items-center space-x-3">
-          <button onClick={fetchCodes} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors text-slate-600">
-            <RefreshCw size={20} className={loading ? 'animate-spin' : ''} />
+        <button
+          onClick={fetchCodes}
+          className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/80 bg-white/90 px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-900)] transition hover:bg-white"
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          刷新
+        </button>
+      </section>
+
+      <section className="rounded-[30px] border border-[var(--color-ink-200)] bg-white p-6 shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
+        <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-[var(--color-ink-800)]">生成类型</label>
+            <select
+              value={generateType}
+              onChange={(e) => setGenerateType(e.target.value as 'care_plus' | 'king')}
+              className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
+            >
+              <option value="care_plus">Care+ 高级版</option>
+              <option value="king">King 无限版</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-semibold text-[var(--color-ink-800)]">生成数量</label>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              value={generateCount}
+              onChange={(e) => setGenerateCount(Number(e.target.value))}
+              className="w-full rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-3 text-sm text-[var(--color-ink-900)] outline-none transition focus:border-[var(--color-brand-500)] focus:ring-4 focus:ring-[rgba(47,127,121,0.12)]"
+            />
+          </div>
+
+          <button
+            onClick={handleGenerate}
+            className="inline-flex items-center justify-center gap-2 self-end rounded-2xl bg-[var(--color-brand-600)] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-brand-700)]"
+          >
+            <Plus size={16} />
+            批量生成
           </button>
         </div>
-      </div>
+      </section>
 
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 flex flex-col sm:flex-row gap-4 items-end">
-        <div className="flex-1 space-y-2">
-          <label className="text-sm font-medium text-slate-700">生成类型</label>
-          <select 
-            value={generateType}
-            onChange={(e) => setGenerateType(e.target.value)}
-            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow text-sm font-medium text-slate-700"
-          >
-            <option value="care_plus">Care+ (高级)</option>
-            <option value="king">King (无限)</option>
-          </select>
-        </div>
-        <div className="flex-1 space-y-2">
-          <label className="text-sm font-medium text-slate-700">生成数量</label>
-          <input 
-            type="number" 
-            min="1" max="50"
-            value={generateCount}
-            onChange={(e) => setGenerateCount(Number(e.target.value))}
-            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow text-sm"
-          />
-        </div>
-        <button 
-          onClick={handleGenerate}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl font-medium transition-colors flex items-center space-x-2"
-        >
-          <Plus size={18} />
-          <span>批量生成</span>
-        </button>
-      </div>
-
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50">
-          <h3 className="font-medium text-slate-700 flex items-center space-x-2">
-            <Key size={18} className="text-indigo-500" />
-            <span>可用兑换码 ({unusedCodes.length})</span>
-          </h3>
-          <p className="text-xs text-slate-500 mt-1">已使用或删除的兑换码不会显示在此列表中。</p>
+      <section className="overflow-hidden rounded-[30px] border border-[var(--color-ink-200)] bg-white shadow-[0_18px_60px_-38px_rgba(16,33,43,0.35)]">
+        <div className="border-b border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-6 py-4">
+          <div className="flex items-center gap-2 text-[var(--color-ink-950)]">
+            <Key size={18} className="text-[var(--color-brand-600)]" />
+            <h3 className="text-lg font-bold">可用兑换码 ({unusedCodes.length})</h3>
+          </div>
+          <p className="mt-1 text-sm text-[var(--color-ink-700)]">已使用或已删除的兑换码不会显示在这里。</p>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-500 text-sm">
-                <th className="py-4 px-6 font-medium">兑换码</th>
-                <th className="py-4 px-6 font-medium">类型</th>
-                <th className="py-4 px-6 font-medium">生成时间</th>
-                <th className="py-4 px-6 font-medium">过期时间</th>
-                <th className="py-4 px-6 font-medium text-right">操作</th>
+          <table className="min-w-full text-left">
+            <thead className="bg-white text-sm text-[var(--color-ink-700)]">
+              <tr className="border-b border-[var(--color-ink-200)]">
+                <th className="px-6 py-4 font-semibold">兑换码</th>
+                <th className="px-6 py-4 font-semibold">类型</th>
+                <th className="px-6 py-4 font-semibold">生成时间</th>
+                <th className="px-6 py-4 font-semibold">过期时间</th>
+                <th className="px-6 py-4 text-right font-semibold">操作</th>
               </tr>
             </thead>
-            <tbody className="text-sm divide-y divide-slate-100">
-              {unusedCodes.map((code, i) => (
-                <tr key={i} className="hover:bg-slate-50 transition-colors">
-                  <td className="py-4 px-6 font-mono text-slate-900 font-medium tracking-wide">
-                    {code.code}
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                      code.type === 'king' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'
-                    }`}>
+            <tbody className="divide-y divide-[var(--color-ink-100)] text-sm text-[var(--color-ink-900)]">
+              {unusedCodes.map((code) => (
+                <tr key={code.code} className="transition hover:bg-[var(--color-brand-50)]/45">
+                  <td className="px-6 py-4 font-mono font-semibold tracking-wide text-[var(--color-ink-950)]">{code.code}</td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={[
+                        'rounded-full px-3 py-1 text-xs font-semibold',
+                        code.type === 'king' ? 'bg-amber-50 text-amber-700' : 'bg-[var(--color-brand-50)] text-[var(--color-brand-700)]',
+                      ].join(' ')}
+                    >
                       {code.type === 'king' ? 'King' : 'Care+'}
                     </span>
                   </td>
-                  <td className="py-4 px-6 text-slate-500 whitespace-nowrap">
-                    {format(new Date(code.createdAt), 'yyyy-MM-dd HH:mm')}
-                  </td>
-                  <td className="py-4 px-6 text-slate-500 whitespace-nowrap">
-                    {format(new Date(code.expiredAt), 'yyyy-MM-dd')}
-                  </td>
-                  <td className="py-4 px-6 text-right space-x-2 whitespace-nowrap">
-                    <button onClick={() => handleCopy(code.code)} className="text-slate-600 hover:bg-slate-100 p-1.5 rounded-lg transition-colors" title="复制">
-                      <Copy size={16} />
-                    </button>
-                    <button onClick={() => handleDelete(code.code)} className="text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors" title="删除">
-                      <Trash2 size={16} />
-                    </button>
+                  <td className="whitespace-nowrap px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(code.createdAt), 'yyyy-MM-dd HH:mm')}</td>
+                  <td className="whitespace-nowrap px-6 py-4 text-[var(--color-ink-700)]">{format(new Date(code.expiredAt), 'yyyy-MM-dd')}</td>
+                  <td className="px-6 py-4 text-right">
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        onClick={() => handleCopy(code.code)}
+                        className="rounded-xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-2 text-[var(--color-ink-700)] transition hover:border-[var(--color-brand-200)] hover:bg-[var(--color-brand-50)] hover:text-[var(--color-brand-700)]"
+                        title="复制"
+                      >
+                        <Copy size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(code.code)}
+                        className="rounded-xl border border-red-100 bg-red-50 p-2 text-red-600 transition hover:bg-red-100"
+                        title="删除"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
+
               {unusedCodes.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-slate-500">暂无可用兑换码</td>
+                  <td colSpan={5} className="px-6 py-16 text-center text-[var(--color-ink-700)]">
+                    暂无可用兑换码
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
