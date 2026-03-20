@@ -470,8 +470,14 @@ export default function Home() {
 
   return (
     <div className="relative min-h-screen overflow-hidden px-4 py-10 text-slate-900 sm:px-6 sm:py-14">
-      <div className="pointer-events-none absolute -left-[10%] -top-[10%] h-[600px] w-[600px] rounded-full bg-emerald-400/20 blur-[140px]" />
-      <div className="pointer-events-none absolute -right-[5%] bottom-[10%] h-[600px] w-[600px] rounded-full bg-teal-400/10 blur-[150px]" />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -left-[10%] -top-[10%] h-[600px] w-[600px] rounded-full bg-emerald-400/20 blur-[140px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-[5%] bottom-[10%] h-[600px] w-[600px] rounded-full bg-teal-400/10 blur-[150px]"
+      />
       <div className="relative z-10 mx-auto max-w-5xl space-y-10">
         <header className="mx-auto max-w-4xl text-center">
           <h1 className="text-[54px] font-black tracking-[-0.03em] text-zinc-900 sm:text-[86px] sm:leading-[0.95]">
@@ -502,7 +508,7 @@ export default function Home() {
           <div className="group relative h-[340px] cursor-pointer overflow-hidden rounded-[36px] border border-transparent bg-white/70 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.06)] ring-1 ring-zinc-200/60 backdrop-blur-3xl transition-all duration-500 ease-out hover:border-emerald-200/50 hover:bg-white hover:shadow-[0_20px_60px_-15px_rgba(16,185,129,0.12)]">
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className="absolute right-6 top-6 z-20 inline-flex items-center gap-2 rounded-full bg-zinc-100/60 px-4 py-2 text-[13px] font-semibold text-zinc-600 shadow-sm backdrop-blur-md transition-all hover:bg-zinc-200/80"
+              className="absolute right-6 top-6 z-40 inline-flex items-center gap-2 rounded-full bg-zinc-100/60 px-4 py-2 text-[13px] font-semibold text-zinc-600 shadow-sm backdrop-blur-md transition-all hover:bg-zinc-200/80"
             >
               <History size={16} />
               <span>历史记录</span>
@@ -513,7 +519,7 @@ export default function Home() {
               accept="image/*,.xlsx,.xls"
               onChange={handleFileChange}
               aria-label="上传医疗文件"
-              className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+              className="absolute inset-0 z-20 h-full w-full cursor-pointer opacity-0"
             />
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-emerald-100/20 to-transparent opacity-0 transition duration-500 group-hover:opacity-100" />
             <div className="relative z-10 flex h-full flex-col items-center justify-center px-6 text-center">
