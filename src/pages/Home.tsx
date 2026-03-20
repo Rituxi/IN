@@ -8,7 +8,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Trash2,
-  Upload,
+  UploadCloud,
   X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -466,46 +466,69 @@ export default function Home() {
           )
         : primaryOcrRecord?.items || []
       : [];
+  const currentYear = new Date().getFullYear();
 
   return (
-    <div className="min-h-screen px-4 py-8 text-slate-900 sm:px-6">
-      <div className="mx-auto max-w-4xl space-y-8">
-        <header className="overflow-hidden rounded-[32px] border border-white/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.94),rgba(238,248,247,0.92))] p-8 shadow-[0_24px_80px_-36px_rgba(16,33,43,0.42)] sm:p-10">
-          <div className="max-w-2xl space-y-5">
-            <span className="inline-flex rounded-full border border-[rgba(47,127,121,0.16)] bg-white/80 px-4 py-1.5 text-sm font-semibold text-[var(--color-brand-700)]">
-              医疗报告结构化识别
-            </span>
-            <div className="space-y-3">
-              <h1 className="text-4xl font-extrabold tracking-tight text-[var(--color-ink-950)] sm:text-5xl">指标笔记 Inno</h1>
-              <p className="max-w-xl text-base leading-7 text-[var(--color-ink-700)] sm:text-lg">
-                上传医疗检查图片或 Excel，快速得到结构化结果，方便继续存档、导出和后续分析。
-              </p>
+    <div className="relative min-h-screen overflow-hidden px-4 py-10 text-slate-900 sm:px-6 sm:py-14">
+      <div className="pointer-events-none absolute -left-[10%] -top-[10%] h-[600px] w-[600px] rounded-full bg-emerald-400/20 blur-[140px]" />
+      <div className="pointer-events-none absolute -right-[5%] bottom-[10%] h-[600px] w-[600px] rounded-full bg-teal-400/10 blur-[150px]" />
+      <div className="relative z-10 mx-auto max-w-5xl space-y-10">
+        <header className="mx-auto max-w-4xl text-center">
+          <h1 className="text-[54px] font-black tracking-[-0.03em] text-zinc-900 sm:text-[86px] sm:leading-[0.95]">
+            指标笔记 <span className="bg-gradient-to-r from-emerald-500 to-teal-500 bg-clip-text text-transparent">Inno</span>
+          </h1>
+          <p className="mx-auto mt-5 max-w-2xl text-[17px] font-medium leading-8 text-zinc-500 sm:text-[22px] sm:leading-9">
+            上传医疗检查图片或 Excel，快速得到精准的结构化结果，
+            <br className="hidden sm:block" />
+            方便后续存档、导出和深度医疗分析。
+          </p>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/5 px-5 py-2.5 text-sm font-medium text-zinc-700 backdrop-blur-md">
+              <ImageIcon size={16} className="text-emerald-500" />
+              <span>支持图片与 Excel</span>
             </div>
-            <div className="grid gap-3 text-sm text-[var(--color-ink-700)] sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">支持图片与 Excel</div>
-              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">自动提取检查项目</div>
-              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3">一键导出标准 JSON</div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/5 px-5 py-2.5 text-sm font-medium text-zinc-700 backdrop-blur-md">
+              <FileText size={16} className="text-emerald-500" />
+              <span>自动提取检查项目</span>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/5 px-5 py-2.5 text-sm font-medium text-zinc-700 backdrop-blur-md">
+              <Download size={16} className="text-emerald-500" />
+              <span>一键导出标准 JSON</span>
             </div>
           </div>
         </header>
 
-        <section className="rounded-[32px] border border-white/70 bg-white/92 p-6 shadow-[0_22px_70px_-34px_rgba(16,33,43,0.34)] sm:p-8">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-[var(--color-ink-950)]">开始识别</h2>
-              <p className="mt-1 text-sm text-[var(--color-ink-700)]">上传文件后即可识别，历史记录会保存在当前浏览器。</p>
-            </div>
+        <section className="mx-auto w-full max-w-3xl space-y-5">
+          <div className="group relative h-[340px] cursor-pointer overflow-hidden rounded-[36px] border border-transparent bg-white/70 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.06)] ring-1 ring-zinc-200/60 backdrop-blur-3xl transition-all duration-500 ease-out hover:border-emerald-200/50 hover:bg-white hover:shadow-[0_20px_60px_-15px_rgba(16,185,129,0.12)]">
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className="inline-flex items-center gap-2 self-start rounded-2xl border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] px-4 py-2.5 text-sm font-semibold text-[var(--color-ink-800)] transition hover:border-[var(--color-brand-200)] hover:bg-[var(--color-brand-50)]"
+              className="absolute right-6 top-6 z-20 inline-flex items-center gap-2 rounded-full bg-zinc-100/60 px-4 py-2 text-[13px] font-semibold text-zinc-600 shadow-sm backdrop-blur-md transition-all hover:bg-zinc-200/80"
             >
-              <History size={18} />
-              <span>历史记录 ({history.length})</span>
+              <History size={16} />
+              <span>历史记录</span>
+              <span className="rounded-full bg-white px-1.5 py-0.5 text-[11px] text-zinc-800 shadow-sm">{history.length}</span>
             </button>
+            <input
+              type="file"
+              accept="image/*,.xlsx,.xls"
+              onChange={handleFileChange}
+              aria-label="上传医疗文件"
+              className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+            />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-emerald-100/20 to-transparent opacity-0 transition duration-500 group-hover:opacity-100" />
+            <div className="relative z-10 flex h-full flex-col items-center justify-center px-6 text-center">
+              <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full border border-zinc-200/60 bg-zinc-50/80 text-zinc-400 transition-all duration-500 group-hover:transform group-hover:border-emerald-200 group-hover:bg-emerald-50 group-hover:text-emerald-500 group-hover:scale-110">
+                <UploadCloud size={36} strokeWidth={2} />
+              </div>
+              <p className="text-[22px] font-semibold tracking-tight text-zinc-800 transition-colors duration-300 group-hover:text-emerald-600">
+                点击选择文件，或将文件拖拽至此
+              </p>
+              <p className="mt-2 text-[14px] font-medium text-zinc-400">支持 JPG、PNG、XLS、XLSX 格式</p>
+            </div>
           </div>
 
           {showHistory && (
-            <div className="mb-6 rounded-[28px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-4">
+            <div className="mt-5 rounded-[26px] border border-zinc-200/70 bg-zinc-50/90 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-[var(--color-ink-900)]">最近识别结果</h3>
                 {history.length > 0 && (
@@ -552,26 +575,8 @@ export default function Home() {
             </div>
           )}
 
-          <div className="relative rounded-[28px] border-2 border-dashed border-[var(--color-brand-200)] bg-[linear-gradient(180deg,rgba(238,248,247,0.75),rgba(255,255,255,0.95))] p-10 text-center transition hover:border-[var(--color-brand-500)]">
-            <input
-              type="file"
-              accept="image/*,.xlsx,.xls"
-              onChange={handleFileChange}
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            />
-            <div className="flex flex-col items-center gap-4">
-              <div className="rounded-full bg-white p-4 text-[var(--color-brand-600)] shadow-sm">
-                <Upload size={32} />
-              </div>
-              <div className="space-y-1">
-                <p className="text-xl font-bold text-[var(--color-ink-950)]">把文件拖到这里，或者点击上传</p>
-                <p className="text-sm text-[var(--color-ink-700)]">支持 JPG、PNG、XLS、XLSX</p>
-              </div>
-            </div>
-          </div>
-
           {file && (
-            <div className="mt-6 flex flex-col gap-4 rounded-[24px] border border-[var(--color-ink-200)] bg-[var(--color-ink-50)] p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-5 flex flex-col gap-4 rounded-[24px] border border-zinc-200/80 bg-zinc-50/80 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl bg-white p-3 text-[var(--color-brand-600)] shadow-sm">
                   {isExcelFile(file) ? <FileText size={20} /> : <ImageIcon size={20} />}
@@ -593,14 +598,14 @@ export default function Home() {
           )}
 
           {error && (
-            <div className="mt-6 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
+            <div className="mt-5 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
               {error}
             </div>
           )}
         </section>
 
         {result && (
-          <section className="space-y-6 rounded-[32px] border border-white/70 bg-white/94 p-6 shadow-[0_22px_70px_-34px_rgba(16,33,43,0.34)] sm:p-8">
+          <section className="mx-auto max-w-4xl space-y-6 rounded-[32px] border border-white/70 bg-white/94 p-6 shadow-[0_22px_70px_-34px_rgba(16,33,43,0.34)] sm:p-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-2xl font-bold text-[var(--color-ink-950)]">识别结果</h2>
@@ -695,6 +700,7 @@ export default function Home() {
             )}
           </section>
         )}
+        <div className="pb-2 pt-2 text-center text-xs font-medium text-zinc-400">© {currentYear} 指标笔记 Inno. All rights reserved.</div>
       </div>
     </div>
   );

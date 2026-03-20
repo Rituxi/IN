@@ -33,9 +33,7 @@
   }
 
   html {
-    background:
-      radial-gradient(circle at top, rgba(47, 127, 121, 0.12), transparent 30%),
-      linear-gradient(180deg, #f7fafb 0%, #f2f6f7 55%, #edf3f5 100%);
+    background: #f5f5f7;
     color: var(--color-ink-950);
     font-family: var(--font-sans);
   }
