@@ -29,6 +29,15 @@ npm run dev
 
 启动前请先在 `.env.local` 中补齐环境变量。
 
+## 开发环境建议
+
+- Windows：浏览器、页面预览、图形化调试
+- WSL：Git、Codex / AI IDE、批量脚本、批量文本处理
+
+涉及中文文件批量修改时，优先在 WSL 中执行。
+不要把 PowerShell 终端乱码直接当成文件损坏。
+详细规则见 [docs/WINDOWS_WSL_UTF8_GUIDE.md](./docs/WINDOWS_WSL_UTF8_GUIDE.md)。
+
 ## 环境变量
 
 | 变量名 | 是否必填 | 说明 |
