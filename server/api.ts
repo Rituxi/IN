@@ -279,15 +279,64 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 // Constants
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
+function containsChineseText(value: string): boolean {
+  return /[\u4e00-\u9fff]/.test(value);
+}
+
+function normalizeChinaProvince(value: string): string {
+  let normalized = String(value || '').trim();
+  normalized = normalized.replace(/^中华人民共和国/, '').replace(/^中国/, '').trim();
+
+  const provinceAliases: Record<string, string> = {
+    '广西壮族自治区': '广西',
+    '内蒙古自治区': '内蒙古',
+    '宁夏回族自治区': '宁夏',
+    '新疆维吾尔自治区': '新疆',
+    '西藏自治区': '西藏',
+    '香港特别行政区': '香港',
+    '澳门特别行政区': '澳门',
+  };
+
+  if (provinceAliases[normalized]) {
+    return provinceAliases[normalized];
+  }
+
+  return normalized.replace(/省$/, '').replace(/市$/, '').trim();
+}
+
+function normalizeChinaCity(value: string): string {
+  let normalized = String(value || '').trim();
+  normalized = normalized.replace(/^中国/, '').trim();
+
+  return normalized
+    .replace(/市$/, '')
+    .trim();
+}
+
 function formatProvinceCity(province: string, city: string, fallback: string | null = null): string | null {
-  const normalizedProvince = String(province || '').trim();
-  const normalizedCity = String(city || '').trim();
+  const rawProvince = String(province || '').trim();
+  const rawCity = String(city || '').trim();
+  const useChineseNormalization = containsChineseText(rawProvince) || containsChineseText(rawCity);
+  const normalizedProvince = useChineseNormalization ? normalizeChinaProvince(rawProvince) : rawProvince;
+  const normalizedCity = useChineseNormalization ? normalizeChinaCity(rawCity) : rawCity;
   const location = [normalizedProvince, normalizedCity].filter(Boolean).join(' ');
   return location || fallback;
 }
 
 const IP_API_CONFIG = {
   providers: [
+    {
+      name: 'ipwho.is',
+      url: (ip: string) => `https://ipwho.is/${ip}?lang=zh-CN&fields=success,country,region,city,message`,
+      parse: (data: any) => {
+        if (data?.success) {
+          const province = data.region || '';
+          const city = data.city || '';
+          return formatProvinceCity(province, city, null);
+        }
+        return null;
+      }
+    },
     {
       name: 'ip-api',
       url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
@@ -313,7 +362,7 @@ const IP_API_CONFIG = {
       }
     }
   ].filter(p => {
-    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ip-api,freeipapi').split(',').map(s => s.trim());
+    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ipwho.is,ip-api').split(',').map(s => s.trim());
     return enabledProviders.includes(p.name);
   }),
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
@@ -1446,6 +1495,25 @@ async function getIpLocation(ip: string): Promise<string> {
   return fallbackLocation;
 }
 
+function shouldRefreshLogIpLocation(ip: unknown, ipLocation: unknown): boolean {
+  const normalizedIp = String(ip || '').trim();
+  const normalizedLocation = String(ipLocation || '').trim();
+
+  if (!normalizedIp || isPrivateIp(normalizedIp)) {
+    return false;
+  }
+
+  if (!normalizedLocation) {
+    return true;
+  }
+
+  if (normalizedLocation === normalizedIp) {
+    return true;
+  }
+
+  return /[A-Za-z]/.test(normalizedLocation) && !containsChineseText(normalizedLocation);
+}
+
 function normalizeGroupName(value: unknown): string {
   const group = toText(value).trim().slice(0, 30);
   return group || DEFAULT_USER_GROUP;
@@ -1868,7 +1936,32 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
 apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
     const logsStr = await redis.lrange('usage_logs', 0, 499);
-    const logs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
+    const parsedLogs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
+    const refreshedIpLocations = new Map<string, Promise<string>>();
+    const logs = await Promise.all(parsedLogs.map(async (log: any) => {
+      if (!log || typeof log !== 'object' || !shouldRefreshLogIpLocation(log.ip, log.ipLocation)) {
+        return log;
+      }
+
+      const ip = String(log.ip || '').trim();
+      if (!refreshedIpLocations.has(ip)) {
+        refreshedIpLocations.set(ip, getIpLocation(ip));
+      }
+
+      try {
+        const refreshedLocation = await refreshedIpLocations.get(ip)!;
+        if (!refreshedLocation) {
+          return log;
+        }
+
+        return {
+          ...log,
+          ipLocation: refreshedLocation,
+        };
+      } catch {
+        return log;
+      }
+    }));
     res.json(logs);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
