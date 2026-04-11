@@ -325,7 +325,30 @@ function formatProvinceCity(province: string, city: string, fallback: string | n
 }
 
 const IP_API_CONFIG = {
-  url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
+  providers: [
+    {
+      name: 'ip-api',
+      url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
+      parse: (data: any) => {
+        if (data?.status !== 'success') {
+          return null;
+        }
+        return formatProvinceCity(data.regionName || '', data.city || '', data.country || UNKNOWN_IP_LOCATION);
+      },
+      honorsRateLimitHeaders: true,
+    },
+    {
+      name: 'freeipapi',
+      url: (ip: string) => `https://free.freeipapi.com/api/json/${ip}`,
+      parse: (data: any) => {
+        if (!data) {
+          return null;
+        }
+        return formatProvinceCity(data.regionName || '', data.cityName || '', data.countryName || UNKNOWN_IP_LOCATION);
+      },
+      honorsRateLimitHeaders: false,
+    },
+  ],
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
   maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
 };
@@ -335,6 +358,9 @@ const DEFAULT_USER_GROUP = '\u672a\u5206\u7ec4';
 const UNKNOWN_IP_LOCATION = '\u672a\u77e5';
 const LOCAL_IP_LOCATION = '\u672c\u5730\u7f51\u7edc';
 const ipLocationCache = new Map<string, string>();
+const ipApiRateLimitState = {
+  blockedUntil: 0,
+};
 const QUOTA_TIMEZONE = process.env.QUOTA_TIMEZONE || 'Asia/Shanghai';
 
 function getDatePartsInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE) {
@@ -1470,33 +1496,57 @@ async function getIpLocation(ip: string): Promise<string> {
     }
   };
 
-  for (let attempt = 0; attempt < IP_API_CONFIG.maxRetries; attempt++) {
-    try {
-      const response = await fetchWithTimeout(IP_API_CONFIG.url(normalizedIp), IP_API_CONFIG.timeoutMs);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+  for (const provider of IP_API_CONFIG.providers) {
+    if (provider.honorsRateLimitHeaders && Date.now() < ipApiRateLimitState.blockedUntil) {
+      continue;
+    }
 
-      const data = await response.json();
-      if (data?.status !== 'success') {
-        throw new Error(data?.message || 'IP lookup failed');
-      }
+    for (let attempt = 0; attempt < IP_API_CONFIG.maxRetries; attempt++) {
+      try {
+        const response = await fetchWithTimeout(provider.url(normalizedIp), IP_API_CONFIG.timeoutMs);
+        const remainingHeader = response.headers.get('x-rl');
+        const ttlHeader = response.headers.get('x-ttl');
+        const remaining = remainingHeader === null ? Number.NaN : Number(remainingHeader);
+        const ttlSeconds = ttlHeader === null ? Number.NaN : Number(ttlHeader);
 
-      const location = formatProvinceCity(data.regionName || '', data.city || '', data.country || UNKNOWN_IP_LOCATION) || UNKNOWN_IP_LOCATION;
-
-      if (ipLocationCache.size >= 100) {
-        const firstKey = ipLocationCache.keys().next().value;
-        if (firstKey) {
-          ipLocationCache.delete(firstKey);
+        if (provider.honorsRateLimitHeaders && (response.status === 429 || remaining === 0) && Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
+          ipApiRateLimitState.blockedUntil = Date.now() + (ttlSeconds * 1000);
         }
-      }
 
-      ipLocationCache.set(normalizedIp, location);
-      return location;
-    } catch (error: any) {
-      console.error(`IP location lookup failed (ip-api, attempt ${attempt + 1}/${IP_API_CONFIG.maxRetries}):`, error.message);
-      if (attempt < IP_API_CONFIG.maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        const rawText = await response.text();
+        let data: any = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : null;
+        } catch {
+          throw new Error(`INVALID_JSON ${rawText.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${data?.message || rawText.slice(0, 120)}`);
+        }
+
+        const location = provider.parse(data);
+        if (!location) {
+          throw new Error(data?.message || 'EMPTY_LOCATION');
+        }
+
+        if (ipLocationCache.size >= 100) {
+          const firstKey = ipLocationCache.keys().next().value;
+          if (firstKey) {
+            ipLocationCache.delete(firstKey);
+          }
+        }
+
+        ipLocationCache.set(normalizedIp, location);
+        return location;
+      } catch (error: any) {
+        console.error(`IP location lookup failed (${provider.name}, attempt ${attempt + 1}/${IP_API_CONFIG.maxRetries}, ip=${normalizedIp}):`, error.message);
+        if (provider.honorsRateLimitHeaders && Date.now() < ipApiRateLimitState.blockedUntil) {
+          break;
+        }
+        if (attempt < IP_API_CONFIG.maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
       }
     }
   }
