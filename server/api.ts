@@ -344,7 +344,7 @@ type JsonResponse<T> = {
 };
 
 const IP_LOOKUP_CONFIG: IpLookupConfig = {
-  url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
+  url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN`,
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
   maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
 };
