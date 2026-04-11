@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isIP } from 'node:net';
 import { Redis as UpstashRedis } from '@upstash/redis';
 import Redis from 'ioredis';
 import { GoogleGenAI } from '@google/genai';
@@ -324,54 +325,15 @@ function formatProvinceCity(province: string, city: string, fallback: string | n
 }
 
 const IP_API_CONFIG = {
-  providers: [
-    {
-      name: 'ipwho.is',
-      url: (ip: string) => `https://ipwho.is/${ip}?lang=zh-CN&fields=success,country,region,city,message`,
-      parse: (data: any) => {
-        if (data?.success) {
-          const province = data.region || '';
-          const city = data.city || '';
-          return formatProvinceCity(province, city, null);
-        }
-        return null;
-      }
-    },
-    {
-      name: 'ip-api',
-      url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
-      parse: (data: any) => {
-        if (data.status === 'success') {
-          const province = data.regionName || '';
-          const city = data.city || '';
-          return formatProvinceCity(province, city, null);
-        }
-        return null;
-      }
-    },
-    {
-      name: 'freeipapi',
-      url: (ip: string) => `https://freeipapi.com/api/json/${ip}`,
-      parse: (data: any) => {
-        if (!data) {
-          return null;
-        }
-        const province = data.regionName || '';
-        const city = data.cityName || '';
-        return formatProvinceCity(province, city, null);
-      }
-    }
-  ].filter(p => {
-    const enabledProviders = (process.env.IP_API_PROVIDERS || 'ipwho.is,ip-api').split(',').map(s => s.trim());
-    return enabledProviders.includes(p.name);
-  }),
+  url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN&fields=status,country,regionName,city,message`,
   timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
   maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
-  rateLimitPerMinute: parseInt(process.env.IP_API_RATE_LIMIT || '40', 10)
 };
 
 const USER_GROUPS_KEY = 'admin:user-groups';
 const DEFAULT_USER_GROUP = '\u672a\u5206\u7ec4';
+const UNKNOWN_IP_LOCATION = '\u672a\u77e5';
+const LOCAL_IP_LOCATION = '\u672c\u5730\u7f51\u7edc';
 const ipLocationCache = new Map<string, string>();
 const QUOTA_TIMEZONE = process.env.QUOTA_TIMEZONE || 'Asia/Shanghai';
 
@@ -800,25 +762,6 @@ async function recordFeatureUsage(
     monthlyUsedCount: parsed.monthlyUsedCount,
     totalUsedCount: parsed.totalUsedCount,
   };
-}
-
-async function checkIpApiRateLimit(): Promise<boolean> {
-  const key = 'rate_limit:ip_api';
-  const limit = IP_API_CONFIG.rateLimitPerMinute;
-  const luaScript = `
-    local current = redis.call('GET', KEYS[1])
-    if current and tonumber(current) >= tonumber(ARGV[1]) then
-      return 0
-    else
-      local newCount = redis.call('INCR', KEYS[1])
-      if newCount == 1 then
-        redis.call('EXPIRE', KEYS[1], 60)
-      end
-      return 1
-    end
-  `;
-  const result = await redis.eval(luaScript, [key], [limit]);
-  return result === 1;
 }
 
 // Level Configuration
@@ -1412,17 +1355,77 @@ function normalizeIp(ip: string): string {
   return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
 }
 
+function splitHeaderValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => splitHeaderValues(item));
+  }
+
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function extractForwardedForValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractForwardedForValues(item));
+  }
+
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .flatMap((entry) => entry.split(';'))
+    .map((segment) => segment.trim())
+    .filter((segment) => /^for=/i.test(segment))
+    .map((segment) => segment.replace(/^for=/i, '').trim());
+}
+
+function parseIpCandidate(value: unknown): string {
+  let candidate = String(value || '').trim();
+  if (!candidate || /^unknown$/i.test(candidate)) {
+    return '';
+  }
+
+  if (candidate.startsWith('"') && candidate.endsWith('"') && candidate.length > 1) {
+    candidate = candidate.slice(1, -1).trim();
+  }
+
+  if (candidate.startsWith('[')) {
+    const closingBracketIndex = candidate.indexOf(']');
+    if (closingBracketIndex > 0) {
+      candidate = candidate.slice(1, closingBracketIndex).trim();
+    }
+  } else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(candidate)) {
+    candidate = candidate.replace(/:\d+$/, '');
+  }
+
+  const normalized = normalizeIp(candidate);
+  return isIP(normalized) ? normalized : '';
+}
+
 function extractClientIp(req: any): string {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const realIp = req.headers['x-real-ip'];
   const candidates = [
-    ...(Array.isArray(forwardedFor) ? forwardedFor.flatMap((item) => item.split(',')) : typeof forwardedFor === 'string' ? forwardedFor.split(',') : []),
-    ...(Array.isArray(realIp) ? realIp : typeof realIp === 'string' ? [realIp] : []),
+    ...splitHeaderValues(req.headers['cf-connecting-ip']),
+    ...splitHeaderValues(req.headers['x-forwarded-for']),
+    ...extractForwardedForValues(req.headers.forwarded),
+    ...splitHeaderValues(req.headers['x-real-ip']),
+    ...splitHeaderValues(req.headers['x-client-ip']),
+    ...splitHeaderValues(req.headers['true-client-ip']),
+    ...splitHeaderValues(req.headers['fly-client-ip']),
+    ...splitHeaderValues(req.headers['fastly-client-ip']),
+    ...splitHeaderValues(req.headers['x-vercel-forwarded-for']),
     req.socket?.remoteAddress,
   ];
 
   for (const candidate of candidates) {
-    const ip = normalizeIp(String(candidate || '').trim());
+    const ip = parseIpCandidate(candidate);
     if (!ip) continue;
     if (!isPrivateIp(ip)) {
       return ip;
@@ -1430,7 +1433,7 @@ function extractClientIp(req: any): string {
   }
 
   for (const candidate of candidates) {
-    const ip = normalizeIp(String(candidate || '').trim());
+    const ip = parseIpCandidate(candidate);
     if (ip) return ip;
   }
 
@@ -1438,80 +1441,67 @@ function extractClientIp(req: any): string {
 }
 
 async function getIpLocation(ip: string): Promise<string> {
-  if (isPrivateIp(ip)) {
-    return '\u672c\u5730\u7f51\u7edc';
+  const normalizedIp = parseIpCandidate(ip);
+
+  if (!normalizedIp) {
+    return UNKNOWN_IP_LOCATION;
   }
 
-  if (ipLocationCache.has(ip)) {
-    return ipLocationCache.get(ip)!;
+  if (isPrivateIp(normalizedIp)) {
+    return LOCAL_IP_LOCATION;
   }
 
-  const fallbackLocation = ip;
-  
-  if (!(await checkIpApiRateLimit())) {
-    console.warn('IP API rate limit exceeded, skipping location lookup');
-    return fallbackLocation;
+  if (ipLocationCache.has(normalizedIp)) {
+    return ipLocationCache.get(normalizedIp)!;
   }
-  
+
   const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(url, { signal: controller.signal });
+      return await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'accept-language': 'zh-CN,zh;q=0.9',
+        },
+      });
     } finally {
       clearTimeout(timeout);
     }
   };
 
-  for (const provider of IP_API_CONFIG.providers) {
-    for (let attempt = 0; attempt < IP_API_CONFIG.maxRetries; attempt++) {
-      try {
-        const response = await fetchWithTimeout(provider.url(ip), IP_API_CONFIG.timeoutMs);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+  for (let attempt = 0; attempt < IP_API_CONFIG.maxRetries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(IP_API_CONFIG.url(normalizedIp), IP_API_CONFIG.timeoutMs);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data?.status !== 'success') {
+        throw new Error(data?.message || 'IP lookup failed');
+      }
+
+      const location = formatProvinceCity(data.regionName || '', data.city || '', data.country || UNKNOWN_IP_LOCATION) || UNKNOWN_IP_LOCATION;
+
+      if (ipLocationCache.size >= 100) {
+        const firstKey = ipLocationCache.keys().next().value;
+        if (firstKey) {
+          ipLocationCache.delete(firstKey);
         }
-        const data = await response.json();
-        const location = provider.parse(data);
-        if (location) {
-          if (ipLocationCache.size >= 100) {
-            const firstKey = ipLocationCache.keys().next().value;
-            if (firstKey) {
-              ipLocationCache.delete(firstKey);
-            }
-          }
-          ipLocationCache.set(ip, location);
-          return location;
-        }
-        break;
-      } catch (error: any) {
-        console.error(`IP location lookup failed (${provider.name}, attempt ${attempt + 1}/${IP_API_CONFIG.maxRetries}):`, error.message);
-        if (attempt < IP_API_CONFIG.maxRetries - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
+      }
+
+      ipLocationCache.set(normalizedIp, location);
+      return location;
+    } catch (error: any) {
+      console.error(`IP location lookup failed (ip-api, attempt ${attempt + 1}/${IP_API_CONFIG.maxRetries}):`, error.message);
+      if (attempt < IP_API_CONFIG.maxRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
       }
     }
   }
-  
-  return fallbackLocation;
-}
 
-function shouldRefreshLogIpLocation(ip: unknown, ipLocation: unknown): boolean {
-  const normalizedIp = String(ip || '').trim();
-  const normalizedLocation = String(ipLocation || '').trim();
-
-  if (!normalizedIp || isPrivateIp(normalizedIp)) {
-    return false;
-  }
-
-  if (!normalizedLocation) {
-    return true;
-  }
-
-  if (normalizedLocation === normalizedIp) {
-    return true;
-  }
-
-  return /[A-Za-z]/.test(normalizedLocation) && !containsChineseText(normalizedLocation);
+  return UNKNOWN_IP_LOCATION;
 }
 
 function normalizeGroupName(value: unknown): string {
@@ -1935,34 +1925,9 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
 
 apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
-    const logsStr = await redis.lrange('usage_logs', 0, 499);
+    const logsStr = await redis.lrange('usage_logs', 0, 99);
     const parsedLogs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
-    const refreshedIpLocations = new Map<string, Promise<string>>();
-    const logs = await Promise.all(parsedLogs.map(async (log: any) => {
-      if (!log || typeof log !== 'object' || !shouldRefreshLogIpLocation(log.ip, log.ipLocation)) {
-        return log;
-      }
-
-      const ip = String(log.ip || '').trim();
-      if (!refreshedIpLocations.has(ip)) {
-        refreshedIpLocations.set(ip, getIpLocation(ip));
-      }
-
-      try {
-        const refreshedLocation = await refreshedIpLocations.get(ip)!;
-        if (!refreshedLocation) {
-          return log;
-        }
-
-        return {
-          ...log,
-          ipLocation: refreshedLocation,
-        };
-      } catch {
-        return log;
-      }
-    }));
-    res.json(logs);
+    res.json(parsedLogs);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

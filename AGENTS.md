@@ -20,6 +20,8 @@
 ## 查找与阅读
 
 - 优先使用 `rg` / `rg --files` 查找内容和文件。
+- 如果 `rg` 命中 `C:\Program Files\WindowsApps\OpenAI.Codex\...\rg(.exe)` 这类 Codex 自带路径，或已经出现 `Access is denied` / `Permission denied`，默认视为当前环境不可用，不要在同一任务里反复重试。
+- 这种情况下，优先使用 WSL 中单独安装的原生 `rg` 或其他原生搜索工具；如果 WSL 里没有可用的原生 `rg`，再退回 PowerShell 的 `Get-ChildItem` 和 `Select-String`。
 - 如果当前环境不能正常使用 `rg`，再退回 PowerShell 的 `Get-ChildItem` 和 `Select-String`。
 - 先读相关文件，再改代码，不要凭猜测直接重写接口或数据结构。
 - 如果只是定位内容，可以使用搜索工具；如果要判断中文编码是否正常，必须采用比终端直出更可靠的方式验证。
