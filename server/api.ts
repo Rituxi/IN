@@ -1603,6 +1603,15 @@ async function ensureUserGroupExists(groupName: string): Promise<string[]> {
   return saveUserGroups([...groups, normalized]);
 }
 
+function sanitizeWeChatSessionPayload(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  const { session_key, ...safePayload } = payload as Record<string, unknown>;
+  return safePayload;
+}
+
 // --- API Routes ---
 
 // 0. WeChat OpenID API
@@ -1615,6 +1624,7 @@ apiRouter.post('/wx/openid', async (req, res) => {
 
     const appid = process.env.WX_APPID;
     const secret = process.env.WX_APPSECRET;
+    res.set('Cache-Control', 'no-store');
 
     if (!appid || !secret) {
       console.error('WX_APPID or WX_APPSECRET not configured');
@@ -1624,17 +1634,19 @@ apiRouter.post('/wx/openid', async (req, res) => {
     const url = `https://api.weixin.qq.com/sns/jscode2session?appid=${appid}&secret=${secret}&js_code=${code}&grant_type=authorization_code`;
     const response = await fetch(url);
     const data = await response.json() as any;
+    const safeData = sanitizeWeChatSessionPayload(data);
 
     if (data.errcode) {
-      console.error('WeChat API error:', data);
-      return res.status(400).json({ error: 'WECHAT_API_ERROR', detail: data });
+      console.error('WeChat API error:', safeData);
+      return res.status(400).json({ error: 'WECHAT_API_ERROR', detail: safeData });
     }
 
     if (!data.openid) {
-      return res.status(400).json({ error: 'OPENID_FETCH_FAILED', detail: data });
+      return res.status(400).json({ error: 'OPENID_FETCH_FAILED', detail: safeData });
     }
 
-    return res.json({ openid: data.openid, session_key: data.session_key });
+    // session_key is a server-side secret and must never be returned to the client.
+    return res.json({ openid: data.openid });
   } catch (e: any) {
     console.error('OpenID fetch error:', e);
     return res.status(500).json({ error: 'SERVER_ERROR', message: e.message });
