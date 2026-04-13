@@ -1941,18 +1941,76 @@ apiRouter.post('/user/redeem', async (req, res) => {
 
 // --- Admin APIs ---
 
-function buildFeatureCountsFromUsers(
-  users: UserRecord[],
-  selector: (user: UserRecord, feature: FeatureType) => number,
-): FeatureCallCounts {
-  return users.reduce<FeatureCallCounts>(
-    (acc, user) => {
-      acc.ocr += toNonNegativeNumber(selector(user, 'ocr'));
-      acc.summary += toNonNegativeNumber(selector(user, 'summary'));
-      return acc;
-    },
-    { ...EMPTY_FEATURE_CALL_COUNTS },
+function toFeatureCallCounts(ocr: unknown, summary: unknown): FeatureCallCounts {
+  return {
+    ocr: toNonNegativeNumber(ocr),
+    summary: toNonNegativeNumber(summary),
+  };
+}
+
+function mergeFeatureCallCountsByMax(primary: FeatureCallCounts, fallback: FeatureCallCounts): FeatureCallCounts {
+  return {
+    ocr: Math.max(primary.ocr, fallback.ocr),
+    summary: Math.max(primary.summary, fallback.summary),
+  };
+}
+
+async function sumCountersByPattern(matchPattern: string): Promise<number> {
+  let cursor = '0';
+  const dedupedKeys = new Set<string>();
+
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, { match: matchPattern, count: 200 });
+    cursor = nextCursor;
+    keys.forEach((key) => dedupedKeys.add(key));
+  } while (cursor !== '0');
+
+  if (!dedupedKeys.size) {
+    return 0;
+  }
+
+  const allKeys = Array.from(dedupedKeys);
+  const batchSize = 200;
+  let total = 0;
+  for (let i = 0; i < allKeys.length; i += batchSize) {
+    const batchKeys = allKeys.slice(i, i + batchSize);
+    const values = await redis.mget(...batchKeys);
+    values.forEach((value) => {
+      total += toNonNegativeNumber(value);
+    });
+  }
+
+  return total;
+}
+
+async function loadSplitFeatureCallCounts(monthKey: string): Promise<{ totalByFeature: FeatureCallCounts; monthByFeature: FeatureCallCounts }> {
+  const [totalOcr, totalSummary, monthOcr, monthSummary] = await redis.mget(
+    getStatsTotalCallsKey('ocr'),
+    getStatsTotalCallsKey('summary'),
+    getStatsMonthlyCallsKey(monthKey, 'ocr'),
+    getStatsMonthlyCallsKey(monthKey, 'summary'),
   );
+
+  return {
+    totalByFeature: toFeatureCallCounts(totalOcr, totalSummary),
+    monthByFeature: toFeatureCallCounts(monthOcr, monthSummary),
+  };
+}
+
+async function loadLegacyFeatureCallCountsFromUserStats(
+  monthKey: string,
+): Promise<{ totalByFeature: FeatureCallCounts; monthByFeature: FeatureCallCounts }> {
+  const [totalOcr, totalSummary, monthOcr, monthSummary] = await Promise.all([
+    sumCountersByPattern('user_stats:*:total:ocr'),
+    sumCountersByPattern('user_stats:*:total:summary'),
+    sumCountersByPattern(`user_stats:*:monthly:${monthKey}:ocr`),
+    sumCountersByPattern(`user_stats:*:monthly:${monthKey}:summary`),
+  ]);
+
+  return {
+    totalByFeature: { ocr: totalOcr, summary: totalSummary },
+    monthByFeature: { ocr: monthOcr, summary: monthSummary },
+  };
 }
 
 async function loadStoredUsersForStats(): Promise<StoredUserRecord[]> {
@@ -2014,15 +2072,13 @@ async function loadTodayCallsByFeature(dayKey: string): Promise<FeatureCallCount
 apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
   try {
     const today = getDateKeyInTimezone();
+    const monthKey = today.slice(0, 7);
     const todayCallsByFeature = await loadTodayCallsByFeature(today);
+    const splitCounts = await loadSplitFeatureCallCounts(monthKey);
+    const legacyCounts = await loadLegacyFeatureCallCountsFromUserStats(monthKey);
+    const totalCallsByFeature = mergeFeatureCallCountsByMax(splitCounts.totalByFeature, legacyCounts.totalByFeature);
+    const monthCallsByFeature = mergeFeatureCallCountsByMax(splitCounts.monthByFeature, legacyCounts.monthByFeature);
     const storedUsers = await loadStoredUsersForStats();
-    const users = await hydrateUsersUsage(storedUsers);
-    const totalCallsByFeature = buildFeatureCountsFromUsers(users, (user, feature) =>
-      feature === 'ocr' ? user.totalOcrUsedCount : user.totalSummaryUsedCount,
-    );
-    const monthCallsByFeature = buildFeatureCountsFromUsers(users, (user, feature) =>
-      feature === 'ocr' ? user.ocrUsed : user.summaryUsed,
-    );
 
     res.json({
       totalCalls: totalCallsByFeature.ocr + totalCallsByFeature.summary,
