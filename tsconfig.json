@@ -25,6 +25,7 @@
   },
   "include": [
     "src",
+    "shared",
     "server",
     "server.ts",
     "vite.config.ts"

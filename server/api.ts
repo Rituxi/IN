@@ -5,6 +5,8 @@ import Redis from 'ioredis';
 import { GoogleGenAI } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
+import { getAdminLogsTotalPages } from '../shared/adminLogs';
+import { toBoundedPositiveInteger } from '../shared/number';
 
 dotenv.config();
 
@@ -15,6 +17,7 @@ interface RedisClient {
   set(key: string, value: string): Promise<void>;
   del(key: string): Promise<void>;
   incr(key: string): Promise<number>;
+  llen(key: string): Promise<number>;
   lpush(key: string, value: string): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
   ltrim(key: string, start: number, stop: number): Promise<void>;
@@ -117,6 +120,11 @@ class IORedisAdapter implements RedisClient {
     return result;
   }
 
+  async llen(key: string): Promise<number> {
+    const result = await this.client.llen(key);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
   async lpush(key: string, value: string): Promise<number> {
     return this.client.lpush(key, value);
   }
@@ -176,6 +184,11 @@ class UpstashRedisAdapter implements RedisClient {
 
   async incr(key: string): Promise<number> {
     const result = await this.client.incr(key);
+    return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
+  async llen(key: string): Promise<number> {
+    const result = await this.client.llen(key);
     return typeof result === 'number' ? result : parseInt(result as string, 10);
   }
 
@@ -264,6 +277,7 @@ const redis: RedisClient = {
   set: (key: string, value: string) => getRedisClient().set(key, value),
   del: (key: string) => getRedisClient().del(key),
   incr: (key: string) => getRedisClient().incr(key),
+  llen: (key: string) => getRedisClient().llen(key),
   lpush: (key: string, value: string) => getRedisClient().lpush(key, value),
   lrange: (key: string, start: number, stop: number) => getRedisClient().lrange(key, start, stop),
   ltrim: (key: string, start: number, stop: number) => getRedisClient().ltrim(key, start, stop),
@@ -376,6 +390,22 @@ const IP_LOOKUP_TIMEOUT_MS = 3000;
 const ipLocationCache = new Map<string, string>();
 const IP_LOCATION_CACHE_SIZE = 100;
 const QUOTA_TIMEZONE = process.env.QUOTA_TIMEZONE || 'Asia/Shanghai';
+const ADMIN_LOGS_CONFIG = Object.freeze({
+  key: 'usage_logs',
+  pageSize: 50,
+  cachedPageCount: 2,
+  maxStore: 1000,
+});
+
+function getAdminLogsPaginationMeta(totalCount: number) {
+  const safeTotalCount = Math.min(Math.max(0, totalCount), ADMIN_LOGS_CONFIG.maxStore);
+  return {
+    pageSize: ADMIN_LOGS_CONFIG.pageSize,
+    memoryWindow: ADMIN_LOGS_CONFIG.pageSize * ADMIN_LOGS_CONFIG.cachedPageCount,
+    maxStore: ADMIN_LOGS_CONFIG.maxStore,
+    totalCount: safeTotalCount,
+  };
+}
 
 function getDatePartsInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -791,7 +821,7 @@ async function recordFeatureUsage(
       getUserFeatureTotalKey(userId, feature),
       getUserFeatureMonthlyKey(userId, feature, monthKey),
       getUserFeaturePendingReservationsKey(userId, feature),
-      'usage_logs',
+      ADMIN_LOGS_CONFIG.key,
       `log_index:${logId}`,
       getStatsTotalCallsKey(),
       getStatsDailyCallsKey(today),
@@ -2049,7 +2079,7 @@ async function loadTodayCallsByFeature(dayKey: string): Promise<FeatureCallCount
 
   // Fallback for legacy data that existed before feature-split counters were introduced.
   const fromLogs: FeatureCallCounts = { ...EMPTY_FEATURE_CALL_COUNTS };
-  const logsStr = await redis.lrange('usage_logs', 0, 999);
+  const logsStr = await redis.lrange(ADMIN_LOGS_CONFIG.key, 0, ADMIN_LOGS_CONFIG.maxStore - 1);
   for (const entry of logsStr) {
     const parsed = typeof entry === 'string' ? safeJsonParse(entry) : entry;
     if (!parsed || typeof parsed !== 'object') continue;
@@ -2096,9 +2126,19 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
 
 apiRouter.get('/admin/logs', checkAdmin, async (req, res) => {
   try {
-    const logsStr = await redis.lrange('usage_logs', 0, 99);
-    const parsedLogs = logsStr.map(l => typeof l === 'string' ? JSON.parse(l) : l);
-    res.json(parsedLogs);
+    const pagination = getAdminLogsPaginationMeta(await redis.llen(ADMIN_LOGS_CONFIG.key));
+    const page = toBoundedPositiveInteger(req.query.page, 1, 1, getAdminLogsTotalPages(pagination));
+
+    const start = (page - 1) * pagination.pageSize;
+    const stop = start + pagination.pageSize - 1;
+    const logsStr = await redis.lrange(ADMIN_LOGS_CONFIG.key, start, stop);
+    const parsedLogs = logsStr.map((entry) => (typeof entry === 'string' ? safeJsonParse(entry) : entry)).filter(Boolean);
+
+    res.json({
+      logs: parsedLogs,
+      page,
+      pagination,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -2110,7 +2150,7 @@ apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
     
     const logStr = await redis.get(`log_index:${logId}`);
     if (logStr) {
-      await redis.lrem('usage_logs', 1, logStr);
+      await redis.lrem(ADMIN_LOGS_CONFIG.key, 1, logStr);
       await redis.del(`log_index:${logId}`);
       res.json({ success: true, deleted: true });
     } else {
