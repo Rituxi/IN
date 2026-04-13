@@ -259,6 +259,7 @@ export default function Logs() {
   const cacheStrategyText = totalPages > effectiveCachedPageCount
     ? `${cacheRangeText}\uff0c\u7b2c ${effectiveCachedPageCount + 1} \u9875\u8d77\u6309\u9700\u52a0\u8f7d\u5386\u53f2\u8bb0\u5f55\u3002`
     : `${cacheRangeText}\uff0c\u5f53\u524d\u603b\u9875\u6570\u90fd\u5728\u7f13\u5b58\u8303\u56f4\u5185\u3002`;
+  const retentionText = `\u5217\u8868\u4ec5\u4fdd\u7559\u6700\u8fd1 ${pagination.maxStore} \u6761\u65e5\u5fd7\uff0c\u8d85\u51fa\u540e\u4f1a\u81ea\u52a8\u6eda\u52a8\u8986\u76d6\u66f4\u65e9\u8bb0\u5f55\u3002`;
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('adminToken') || '';
@@ -435,6 +436,7 @@ export default function Logs() {
           <p className="text-[13px] text-zinc-400">
             {`\u5206\u9875\u89c4\u5219\uff1a\u6bcf\u9875 ${pageSize} \u6761\u3002${cacheStrategyText}`}
           </p>
+          <p className="mt-1 text-[13px] text-zinc-400">{retentionText}</p>
         </div>
 
         <div className="hidden grid-cols-[90px_minmax(0,1fr)_120px_100px_80px_80px_80px] items-center gap-x-6 px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">

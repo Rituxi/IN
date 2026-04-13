@@ -394,8 +394,11 @@ const ADMIN_LOGS_CONFIG = Object.freeze({
   key: 'usage_logs',
   pageSize: 50,
   cachedPageCount: 2,
-  maxStore: 1000,
+  maxStore: toBoundedPositiveInteger(process.env.ADMIN_LOGS_MAX_STORE, 5000, 1000, 50000),
 });
+const ADMIN_LOG_INDEX_KEY_PREFIX = 'log_index:';
+const ADMIN_LOG_TRIM_DECODE_FAILURES_KEY = 'stats:adminLogs:trimDecodeFailures';
+const ADMIN_LOG_TRIM_LAST_FAILURE_SAMPLE_KEY = 'stats:adminLogs:lastTrimDecodeFailureSample';
 
 function getAdminLogsPaginationMeta(totalCount: number) {
   const safeTotalCount = Math.min(Math.max(0, totalCount), ADMIN_LOGS_CONFIG.maxStore);
@@ -405,6 +408,10 @@ function getAdminLogsPaginationMeta(totalCount: number) {
     maxStore: ADMIN_LOGS_CONFIG.maxStore,
     totalCount: safeTotalCount,
   };
+}
+
+function getAdminLogIndexKey(logId: string) {
+  return `${ADMIN_LOG_INDEX_KEY_PREFIX}${logId}`;
 }
 
 function getDatePartsInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE) {
@@ -770,6 +777,19 @@ async function recordFeatureUsage(
   const logId = `log_${uuidv4()}`;
   const monthlyExpireSeconds = 60 * 60 * 24 * 400;
   const luaScript = `
+    local function extractLogId(rawLog)
+      local ok, parsed = pcall(cjson.decode, rawLog)
+      if ok and type(parsed) == 'table' and parsed.id then
+        return tostring(parsed.id)
+      end
+
+      if type(rawLog) ~= 'string' then
+        return nil
+      end
+
+      return string.match(rawLog, '"id"%s*:%s*"([^"]+)"')
+    end
+
     if ARGV[1] ~= '' then
       redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', tonumber(ARGV[2]))
       local removed = redis.call('ZREM', KEYS[3], ARGV[1])
@@ -810,7 +830,19 @@ async function recordFeatureUsage(
 
     redis.call('LPUSH', KEYS[4], log)
     redis.call('SET', KEYS[5], log)
-    redis.call('LTRIM', KEYS[4], 0, 999)
+    local overflow = redis.call('LRANGE', KEYS[4], tonumber(ARGV[11]), -1)
+    redis.call('LTRIM', KEYS[4], 0, tonumber(ARGV[11]) - 1)
+    local logIndexKeyPrefix = ARGV[12]
+
+    for _, overflowLog in ipairs(overflow) do
+      local overflowLogId = extractLogId(overflowLog)
+      if overflowLogId and overflowLogId ~= '' then
+        redis.call('DEL', logIndexKeyPrefix .. overflowLogId)
+      else
+        redis.call('INCR', KEYS[12])
+        redis.call('SET', KEYS[13], string.sub(tostring(overflowLog), 1, 500))
+      end
+    end
 
     return { 1, monthly, total }
   `;
@@ -822,13 +854,15 @@ async function recordFeatureUsage(
       getUserFeatureMonthlyKey(userId, feature, monthKey),
       getUserFeaturePendingReservationsKey(userId, feature),
       ADMIN_LOGS_CONFIG.key,
-      `log_index:${logId}`,
+      getAdminLogIndexKey(logId),
       getStatsTotalCallsKey(),
       getStatsDailyCallsKey(today),
       getStatsMonthlyCallsKey(monthKey),
       getStatsTotalCallsKey(feature),
       getStatsDailyCallsKey(today, feature),
       getStatsMonthlyCallsKey(monthKey, feature),
+      ADMIN_LOG_TRIM_DECODE_FAILURES_KEY,
+      ADMIN_LOG_TRIM_LAST_FAILURE_SAMPLE_KEY,
     ],
     [
       reservationId || '',
@@ -841,6 +875,8 @@ async function recordFeatureUsage(
       ipLocation,
       feature,
       usedAt,
+      ADMIN_LOGS_CONFIG.maxStore,
+      ADMIN_LOG_INDEX_KEY_PREFIX,
     ],
   );
   const parsed = parseLuaCountResult(result);
@@ -2148,11 +2184,12 @@ apiRouter.delete('/admin/logs/:logId', checkAdmin, async (req, res) => {
   try {
     const { logId } = req.params;
     
-    const logStr = await redis.get(`log_index:${logId}`);
+    const logIndexKey = getAdminLogIndexKey(logId);
+    const logStr = await redis.get(logIndexKey);
     if (logStr) {
-      await redis.lrem(ADMIN_LOGS_CONFIG.key, 1, logStr);
-      await redis.del(`log_index:${logId}`);
-      res.json({ success: true, deleted: true });
+      const removedCount = await redis.lrem(ADMIN_LOGS_CONFIG.key, 1, logStr);
+      await redis.del(logIndexKey);
+      res.json({ success: true, deleted: removedCount > 0 });
     } else {
       res.json({ success: true, deleted: false });
     }
