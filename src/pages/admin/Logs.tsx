@@ -207,6 +207,28 @@ const statCards = [
   { key: 'totalUsers', label: '总用户数', icon: Users },
 ] as const;
 
+function StatCardValue({
+  splitStats,
+  fallbackValue,
+}: {
+  splitStats: FeatureStats | null;
+  fallbackValue: number;
+}) {
+  if (!splitStats) {
+    return <div className="text-[32px] font-semibold leading-none tracking-tight">{fallbackValue}</div>;
+  }
+
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[32px] font-bold leading-none tracking-tight text-zinc-900">{splitStats.ocr}</span>
+      <span className="text-[12px] font-bold text-zinc-400">OCR</span>
+      <span className="mx-1 text-[18px] font-light text-zinc-200">|</span>
+      <span className="text-[32px] font-bold leading-none tracking-tight text-zinc-900">{splitStats.summary}</span>
+      <span className="text-[12px] font-medium text-zinc-400">小结</span>
+    </div>
+  );
+}
+
 function getFeatureMeta(feature: UsageLog['feature']) {
   if (feature === 'ocr') {
     return {
@@ -397,7 +419,7 @@ export default function Logs() {
           {statCards.map((stat, index) => {
             const Icon = stat.icon;
             const splitStats = 'splitKey' in stat ? stats[stat.splitKey] : null;
-            const value = splitStats ? `${splitStats.ocr}|${splitStats.summary}` : stats[stat.key];
+            const fallbackValue = stats[stat.key];
             const cardClass = 'bg-white/45 text-zinc-900';
             const iconClass = 'bg-zinc-100/80 text-zinc-500';
             const labelClass = 'text-zinc-500';
@@ -414,7 +436,7 @@ export default function Logs() {
                     <Icon size={20} />
                   </div>
                 </div>
-                <div className="text-[32px] font-semibold leading-none tracking-tight">{value}</div>
+                <StatCardValue splitStats={splitStats} fallbackValue={fallbackValue} />
                 <div className={`mt-3 text-[12px] font-medium ${noteClass}`}>
                   {index === 0
                     ? '累计功能调用'

@@ -480,8 +480,8 @@ export default function Home() {
       />
       <div className="relative z-10 mx-auto max-w-5xl space-y-10">
         <header className="mx-auto max-w-4xl text-center">
-          <h1 className="text-[54px] font-black tracking-[-0.03em] text-zinc-900 sm:text-[86px] sm:leading-[0.95]">
-            指标笔记 <span className="bg-gradient-to-r from-emerald-500 to-teal-500 bg-clip-text text-transparent">Inno</span>
+          <h1 className="text-[46px] font-black tracking-[-0.03em] text-zinc-900 sm:text-[72px] sm:leading-[0.95]">
+            指标笔记
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-[17px] font-medium leading-8 text-zinc-500 sm:text-[22px] sm:leading-9">
             上传医疗检查图片或 Excel，快速得到精准的结构化结果，
@@ -706,7 +706,7 @@ export default function Home() {
             )}
           </section>
         )}
-        <div className="pb-2 pt-2 text-center text-xs font-medium text-zinc-400">© {currentYear} 指标笔记 Inno. All rights reserved.</div>
+        <div className="pb-2 pt-2 text-center text-xs font-medium text-zinc-400">© {currentYear} 指标笔记. All rights reserved.</div>
       </div>
     </div>
   );
