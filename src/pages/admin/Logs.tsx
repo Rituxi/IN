@@ -2,11 +2,19 @@ import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { Activity, BarChart3, Calendar, FileText, RefreshCw, Trash2, Users } from 'lucide-react';
 
+interface FeatureStats {
+  ocr: number;
+  summary: number;
+}
+
 interface UsageStats {
   totalCalls: number;
   todayCalls: number;
   monthCalls: number;
   totalUsers: number;
+  totalCallsByFeature: FeatureStats;
+  todayCallsByFeature: FeatureStats;
+  monthCallsByFeature: FeatureStats;
 }
 
 interface UsageLog {
@@ -25,13 +33,51 @@ const defaultStats: UsageStats = {
   todayCalls: 0,
   monthCalls: 0,
   totalUsers: 0,
+  totalCallsByFeature: { ocr: 0, summary: 0 },
+  todayCallsByFeature: { ocr: 0, summary: 0 },
+  monthCallsByFeature: { ocr: 0, summary: 0 },
 };
 
+function toNonNegativeNumber(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function normalizeFeatureStats(value: unknown): FeatureStats {
+  if (!value || typeof value !== 'object') {
+    return { ...defaultStats.totalCallsByFeature };
+  }
+  const featureStats = value as Record<string, unknown>;
+  return {
+    ocr: toNonNegativeNumber(featureStats.ocr),
+    summary: toNonNegativeNumber(featureStats.summary),
+  };
+}
+
+function normalizeUsageStats(value: unknown): UsageStats {
+  if (!value || typeof value !== 'object') {
+    return defaultStats;
+  }
+  const stats = value as Record<string, unknown>;
+  return {
+    totalCalls: toNonNegativeNumber(stats.totalCalls),
+    todayCalls: toNonNegativeNumber(stats.todayCalls),
+    monthCalls: toNonNegativeNumber(stats.monthCalls),
+    totalUsers: toNonNegativeNumber(stats.totalUsers),
+    totalCallsByFeature: normalizeFeatureStats(stats.totalCallsByFeature),
+    todayCallsByFeature: normalizeFeatureStats(stats.todayCallsByFeature),
+    monthCallsByFeature: normalizeFeatureStats(stats.monthCallsByFeature),
+  };
+}
+
 const statCards = [
-  { key: 'totalCalls', label: '总调用次数', icon: BarChart3 },
-  { key: 'todayCalls', label: '今日调用', icon: Activity },
-  { key: 'monthCalls', label: '本月调用', icon: Calendar },
-  { key: 'totalUsers', label: '总用户数', icon: Users },
+  { key: 'totalCalls', splitKey: 'totalCallsByFeature', label: '\u603b\u8c03\u7528\u6b21\u6570', icon: BarChart3 },
+  { key: 'todayCalls', splitKey: 'todayCallsByFeature', label: '\u4eca\u65e5\u8c03\u7528', icon: Activity },
+  { key: 'monthCalls', splitKey: 'monthCallsByFeature', label: '\u672c\u6708\u8c03\u7528', icon: Calendar },
+  { key: 'totalUsers', label: '\u603b\u7528\u6237\u6570', icon: Users },
 ] as const;
 
 function getFeatureMeta(feature: UsageLog['feature']) {
@@ -88,12 +134,7 @@ export default function Logs() {
 
       if (statsRes.ok) {
         const statsData = await statsRes.json();
-        setStats({
-          totalCalls: Number(statsData.totalCalls || 0),
-          todayCalls: Number(statsData.todayCalls || 0),
-          monthCalls: Number(statsData.monthCalls || 0),
-          totalUsers: Number(statsData.totalUsers || 0),
-        });
+        setStats(normalizeUsageStats(statsData));
       }
     } catch (error) {
       console.error(error);
@@ -164,7 +205,8 @@ export default function Logs() {
         <div className="mt-6 grid gap-4 xl:grid-cols-4">
           {statCards.map((stat, index) => {
             const Icon = stat.icon;
-            const value = stats[stat.key];
+            const splitStats = 'splitKey' in stat ? stats[stat.splitKey] : null;
+            const value = splitStats ? `${splitStats.ocr}|${splitStats.summary}` : stats[stat.key];
             const cardClass = 'bg-white/45 text-zinc-900';
             const iconClass = index === 0 ? 'bg-zinc-100/80 text-zinc-500' : 'bg-zinc-100/80 text-zinc-500';
             const labelClass = 'text-zinc-500';

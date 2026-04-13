@@ -280,81 +280,101 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 // Constants
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
-function containsChineseText(value: string): boolean {
-  return /[\u4e00-\u9fff]/.test(value);
+type IpLookupPayload = Record<string, unknown>;
+
+const IP_LOOKUP_LOCATION_KEYS = ['location', '\u4f4d\u7f6e'];
+const IP_LOOKUP_PROVINCE_KEYS = ['province', 'region', 'regionName', '\u7701\u4efd'];
+const IP_LOOKUP_CITY_KEYS = ['city', '\u57ce\u5e02'];
+const IP_LOOKUP_COUNTRY_KEYS = ['country', '\u56fd\u5bb6'];
+
+function getLookupText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
-function normalizeChinaProvince(value: string): string {
-  let normalized = String(value || '').trim();
-  normalized = normalized.replace(/^中华人民共和国/, '').replace(/^中国/, '').trim();
+function pickLookupField(data: IpLookupPayload, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = getLookupText(data[key]);
+    if (value) return value;
+  }
+  return '';
+}
 
-  const provinceAliases: Record<string, string> = {
-    '广西壮族自治区': '广西',
-    '内蒙古自治区': '内蒙古',
-    '宁夏回族自治区': '宁夏',
-    '新疆维吾尔自治区': '新疆',
-    '西藏自治区': '西藏',
-    '香港特别行政区': '香港',
-    '澳门特别行政区': '澳门',
-  };
+function normalizeLocationToken(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return '';
+  if (normalized === '0') return '';
+  if (/^(unknown|null|none)$/i.test(normalized)) return '';
+  return normalized;
+}
 
-  if (provinceAliases[normalized]) {
-    return provinceAliases[normalized];
+function buildLocationFromLookup(data: IpLookupPayload): string {
+  const directLocation = pickLookupField(data, IP_LOOKUP_LOCATION_KEYS);
+  if (directLocation) {
+    const normalizedDirect = directLocation
+      .split(/\s+/)
+      .map(normalizeLocationToken)
+      .filter(Boolean)
+      .join(' ');
+    if (normalizedDirect) return normalizedDirect;
   }
 
-  return normalized.replace(/省$/, '').replace(/市$/, '').trim();
+  const province = normalizeLocationToken(pickLookupField(data, IP_LOOKUP_PROVINCE_KEYS));
+  const city = normalizeLocationToken(pickLookupField(data, IP_LOOKUP_CITY_KEYS));
+  const country = normalizeLocationToken(pickLookupField(data, IP_LOOKUP_COUNTRY_KEYS));
+
+  const location = [province, city].filter(Boolean).join(' ');
+  if (location) return location;
+  if (country) return country;
+
+  return UNKNOWN_IP_LOCATION;
 }
 
-function normalizeChinaCity(value: string): string {
-  let normalized = String(value || '').trim();
-  normalized = normalized.replace(/^中国/, '').trim();
+async function fetchLookupData(ip: string): Promise<IpLookupPayload> {
+  const normalizedBaseUrl = IP_LOOKUP_BASE_URL.endsWith('/') ? IP_LOOKUP_BASE_URL : `${IP_LOOKUP_BASE_URL}/`;
+  const lookupUrl = new URL('api/lookup', normalizedBaseUrl);
+  lookupUrl.searchParams.set('ip', ip);
 
-  return normalized
-    .replace(/市$/, '')
-    .trim();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), IP_LOOKUP_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(lookupUrl.toString(), {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'IN-Server/1.0',
+      },
+    });
+
+    const rawText = await response.text();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${rawText.slice(0, 160)}`);
+    }
+
+    const parsed = rawText ? JSON.parse(rawText) : null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`INVALID_RESPONSE ${rawText.slice(0, 160)}`);
+    }
+
+    return parsed as IpLookupPayload;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Request timeout');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
-
-function formatProvinceCity(province: string, city: string, fallback: string | null = null): string | null {
-  const rawProvince = String(province || '').trim();
-  const rawCity = String(city || '').trim();
-  const useChineseNormalization = containsChineseText(rawProvince) || containsChineseText(rawCity);
-  const normalizedProvince = useChineseNormalization ? normalizeChinaProvince(rawProvince) : rawProvince;
-  const normalizedCity = useChineseNormalization ? normalizeChinaCity(rawCity) : rawCity;
-  const location = [normalizedProvince, normalizedCity].filter(Boolean).join(' ');
-  return location || fallback;
-}
-
-type IpLookupConfig = {
-  url: (ip: string) => string;
-  timeoutMs: number;
-  maxRetries: number;
-};
-
-type IpApiResponse = {
-  status?: 'success' | 'fail';
-  country?: string;
-  regionName?: string;
-  city?: string;
-  message?: string;
-};
-
-type JsonResponse<T> = {
-  rawText: string;
-  data: T | null;
-};
-
-const IP_LOOKUP_CONFIG: IpLookupConfig = {
-  url: (ip: string) => `http://ip-api.com/json/${ip}?lang=zh-CN`,
-  timeoutMs: parseInt(process.env.IP_API_TIMEOUT_MS || '3000', 10),
-  maxRetries: parseInt(process.env.IP_API_MAX_RETRIES || '2', 10),
-};
 
 const USER_GROUPS_KEY = 'admin:user-groups';
 const DEFAULT_USER_GROUP = '\u672a\u5206\u7ec4';
 const UNKNOWN_IP_LOCATION = '\u672a\u77e5';
 const LOCAL_IP_LOCATION = '\u672c\u5730\u7f51\u7edc';
+const IP_LOOKUP_BASE_URL = 'https://rituxi.dpdns.org';
+const IP_LOOKUP_TIMEOUT_MS = 3000;
 const ipLocationCache = new Map<string, string>();
-let ipApiBlockedUntil = 0;
+const IP_LOCATION_CACHE_SIZE = 100;
 const QUOTA_TIMEZONE = process.env.QUOTA_TIMEZONE || 'Asia/Shanghai';
 
 function getDatePartsInTimezone(date: Date = new Date(), timeZone: string = QUOTA_TIMEZONE) {
@@ -509,6 +529,22 @@ function getUserFeatureMonthlyKey(userId: string, feature: FeatureType, monthKey
 
 function getUserFeaturePendingReservationsKey(userId: string, feature: FeatureType): string {
   return `user_stats:${userId}:pending:${feature}`;
+}
+
+type FeatureCallCounts = Record<FeatureType, number>;
+
+const EMPTY_FEATURE_CALL_COUNTS: FeatureCallCounts = { ocr: 0, summary: 0 };
+
+function getStatsTotalCallsKey(feature?: FeatureType): string {
+  return feature ? `stats:totalCalls:${feature}` : 'stats:totalCalls';
+}
+
+function getStatsDailyCallsKey(dayKey: string, feature?: FeatureType): string {
+  return feature ? `stats:dailyCalls:${dayKey}:${feature}` : `stats:dailyCalls:${dayKey}`;
+}
+
+function getStatsMonthlyCallsKey(monthKey: string, feature?: FeatureType): string {
+  return feature ? `stats:monthlyCalls:${monthKey}:${feature}` : `stats:monthlyCalls:${monthKey}`;
 }
 
 async function hydrateUsersUsage(users: StoredUserRecord[]): Promise<UserRecord[]> {
@@ -725,6 +761,10 @@ async function recordFeatureUsage(
     redis.call('INCR', KEYS[6])
     redis.call('INCR', KEYS[7])
     redis.call('INCR', KEYS[8])
+    redis.call('INCR', KEYS[9])
+    redis.call('INCR', KEYS[10])
+    redis.call('INCR', KEYS[11])
+    redis.call('EXPIRE', KEYS[11], tonumber(ARGV[4]))
 
     local log = cjson.encode({
       id = ARGV[5],
@@ -753,9 +793,12 @@ async function recordFeatureUsage(
       getUserFeaturePendingReservationsKey(userId, feature),
       'usage_logs',
       `log_index:${logId}`,
-      'stats:totalCalls',
-      `stats:dailyCalls:${today}`,
-      `stats:monthlyCalls:${monthKey}`,
+      getStatsTotalCallsKey(),
+      getStatsDailyCallsKey(today),
+      getStatsMonthlyCallsKey(monthKey),
+      getStatsTotalCallsKey(feature),
+      getStatsDailyCallsKey(today, feature),
+      getStatsMonthlyCallsKey(monthKey, feature),
     ],
     [
       reservationId || '',
@@ -1475,90 +1518,27 @@ async function getIpLocation(ip: string): Promise<string> {
     return ipLocationCache.get(normalizedIp)!;
   }
 
-  const fetchWithTimeout = async (
-    url: string,
-    timeoutMs: number = IP_LOOKUP_CONFIG.timeoutMs,
-  ): Promise<Response> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'accept-language': 'zh-CN,zh;q=0.9',
-        },
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
+  try {
+    const lookupData = await fetchLookupData(normalizedIp);
+    const location = buildLocationFromLookup(lookupData);
 
-  const readJsonResponse = async <T>(response: Response): Promise<JsonResponse<T>> => {
-    const rawText = await response.text();
-    try {
-      return {
-        rawText,
-        data: rawText ? JSON.parse(rawText) as T : null,
-      };
-    } catch {
-      throw new Error(`INVALID_JSON ${rawText.slice(0, 120)}`);
+    if (location === UNKNOWN_IP_LOCATION) {
+      return location;
     }
-  };
 
-  if (Date.now() < ipApiBlockedUntil) {
+    if (ipLocationCache.size >= IP_LOCATION_CACHE_SIZE) {
+      const firstKey = ipLocationCache.keys().next().value;
+      if (firstKey) {
+        ipLocationCache.delete(firstKey);
+      }
+    }
+
+    ipLocationCache.set(normalizedIp, location);
+    return location;
+  } catch (error: any) {
+    console.error(`IP location lookup failed (rituxi ip2region, ip=${normalizedIp}):`, error.message);
     return UNKNOWN_IP_LOCATION;
   }
-
-  let location = UNKNOWN_IP_LOCATION;
-
-  for (let attempt = 0; attempt < IP_LOOKUP_CONFIG.maxRetries; attempt++) {
-    try {
-      const response = await fetchWithTimeout(IP_LOOKUP_CONFIG.url(normalizedIp));
-      const remainingHeader = response.headers.get('x-rl');
-      const ttlHeader = response.headers.get('x-ttl');
-      const remaining = remainingHeader === null ? Number.NaN : Number(remainingHeader);
-      const ttlSeconds = ttlHeader === null ? Number.NaN : Number(ttlHeader);
-
-      if ((response.status === 429 || remaining === 0) && Number.isFinite(ttlSeconds) && ttlSeconds > 0) {
-        ipApiBlockedUntil = Date.now() + (ttlSeconds * 1000);
-      }
-
-      const { rawText, data } = await readJsonResponse<IpApiResponse>(response);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${data?.message || rawText.slice(0, 120)}`);
-      }
-
-      if (data?.status !== 'success') {
-        throw new Error(data?.message || 'IP lookup failed');
-      }
-
-      location = formatProvinceCity(data.regionName || '', data.city || '', data.country || UNKNOWN_IP_LOCATION) || UNKNOWN_IP_LOCATION;
-      break;
-    } catch (error: any) {
-      console.error(`IP location lookup failed (ip-api, attempt ${attempt + 1}/${IP_LOOKUP_CONFIG.maxRetries}, ip=${normalizedIp}):`, error.message);
-      if (Date.now() < ipApiBlockedUntil) {
-        break;
-      }
-      if (attempt < IP_LOOKUP_CONFIG.maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-    }
-  }
-
-  if (location === UNKNOWN_IP_LOCATION) {
-    return location;
-  }
-
-  if (ipLocationCache.size >= 100) {
-    const firstKey = ipLocationCache.keys().next().value;
-    if (firstKey) {
-      ipLocationCache.delete(firstKey);
-    }
-  }
-
-  ipLocationCache.set(normalizedIp, location);
-  return location;
 }
 
 function normalizeGroupName(value: unknown): string {
@@ -1961,31 +1941,97 @@ apiRouter.post('/user/redeem', async (req, res) => {
 
 // --- Admin APIs ---
 
+function buildFeatureCountsFromUsers(
+  users: UserRecord[],
+  selector: (user: UserRecord, feature: FeatureType) => number,
+): FeatureCallCounts {
+  return users.reduce<FeatureCallCounts>(
+    (acc, user) => {
+      acc.ocr += toNonNegativeNumber(selector(user, 'ocr'));
+      acc.summary += toNonNegativeNumber(selector(user, 'summary'));
+      return acc;
+    },
+    { ...EMPTY_FEATURE_CALL_COUNTS },
+  );
+}
+
+async function loadStoredUsersForStats(): Promise<StoredUserRecord[]> {
+  let cursor = '0';
+  const userMap = new Map<string, StoredUserRecord>();
+
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, { match: 'user:*', count: 100 });
+    cursor = nextCursor;
+    if (!keys.length) continue;
+
+    const userStrs = await redis.mget(...keys);
+    userStrs.forEach((value) => {
+      if (!value) return;
+      const parsed = typeof value === 'string' ? safeJsonParse(value) : value;
+      if (!parsed || typeof parsed !== 'object') return;
+      const candidate = parsed as Record<string, unknown>;
+      const rawUserId = toText(candidate.userId).trim();
+      if (!rawUserId || rawUserId.startsWith('web_')) return;
+      userMap.set(rawUserId, normalizeStoredUserRecord(candidate, rawUserId));
+    });
+  } while (cursor !== '0');
+
+  return Array.from(userMap.values());
+}
+
+async function loadTodayCallsByFeature(dayKey: string): Promise<FeatureCallCounts> {
+  const [todayOcrCalls, todaySummaryCalls] = await redis.mget(
+    getStatsDailyCallsKey(dayKey, 'ocr'),
+    getStatsDailyCallsKey(dayKey, 'summary'),
+  );
+  const fromKeys: FeatureCallCounts = {
+    ocr: toNonNegativeNumber(todayOcrCalls),
+    summary: toNonNegativeNumber(todaySummaryCalls),
+  };
+
+  // Fallback for legacy data that existed before feature-split counters were introduced.
+  const fromLogs: FeatureCallCounts = { ...EMPTY_FEATURE_CALL_COUNTS };
+  const logsStr = await redis.lrange('usage_logs', 0, 999);
+  for (const entry of logsStr) {
+    const parsed = typeof entry === 'string' ? safeJsonParse(entry) : entry;
+    if (!parsed || typeof parsed !== 'object') continue;
+    const log = parsed as Record<string, unknown>;
+    const usedAt = toText(log.usedAt).trim();
+    const feature = toText(log.feature).trim();
+    if (!usedAt || (feature !== 'ocr' && feature !== 'summary')) continue;
+    const usedDate = new Date(usedAt);
+    if (Number.isNaN(usedDate.getTime())) continue;
+    if (getDateKeyInTimezone(usedDate) !== dayKey) continue;
+    fromLogs[feature] += 1;
+  }
+
+  return {
+    ocr: Math.max(fromKeys.ocr, fromLogs.ocr),
+    summary: Math.max(fromKeys.summary, fromLogs.summary),
+  };
+}
+
 apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
   try {
-    const totalCalls = await redis.get('stats:totalCalls') || 0;
     const today = getDateKeyInTimezone();
-    const todayCalls = await redis.get(`stats:dailyCalls:${today}`) || 0;
-    const month = today.substring(0, 7);
-    const monthCalls = await redis.get(`stats:monthlyCalls:${month}`) || 0;
-    
-    let cursor = '0';
-    let totalUsers = 0;
-    do {
-      const [nextCursor, keys] = await redis.scan(cursor, { match: 'user:*', count: 100 });
-      cursor = nextCursor;
-      if (keys.length > 0) {
-        const userStrs = await redis.mget(...keys);
-        const users = userStrs.filter(Boolean).map(u => typeof u === 'string' ? JSON.parse(u) : u);
-        totalUsers += users.filter((u: any) => u?.userId && !u.userId.startsWith('web_')).length;
-      }
-    } while (cursor !== '0');
+    const todayCallsByFeature = await loadTodayCallsByFeature(today);
+    const storedUsers = await loadStoredUsersForStats();
+    const users = await hydrateUsersUsage(storedUsers);
+    const totalCallsByFeature = buildFeatureCountsFromUsers(users, (user, feature) =>
+      feature === 'ocr' ? user.totalOcrUsedCount : user.totalSummaryUsedCount,
+    );
+    const monthCallsByFeature = buildFeatureCountsFromUsers(users, (user, feature) =>
+      feature === 'ocr' ? user.ocrUsed : user.summaryUsed,
+    );
 
     res.json({
-      totalCalls: Number(totalCalls),
-      todayCalls: Number(todayCalls),
-      monthCalls: Number(monthCalls),
-      totalUsers
+      totalCalls: totalCallsByFeature.ocr + totalCallsByFeature.summary,
+      todayCalls: todayCallsByFeature.ocr + todayCallsByFeature.summary,
+      monthCalls: monthCallsByFeature.ocr + monthCallsByFeature.summary,
+      totalUsers: storedUsers.length,
+      totalCallsByFeature,
+      todayCallsByFeature,
+      monthCallsByFeature,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
