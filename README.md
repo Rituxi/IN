@@ -357,7 +357,7 @@ npm run start
 ## 当前后台入口
 
 - 后台路径：`/admin`
-- 默认页：`/admin/analytics`
+- 默认页：`/admin/logs`
 
 ## 额外说明
 

@@ -3,8 +3,8 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { FileText, Key, LogOut, PieChart, Settings, ShieldCheck, Sparkles, Users } from 'lucide-react';
 
 const navItems = [
-  { to: '/admin/analytics', icon: PieChart, label: '\u6570\u636e\u5206\u6790', desc: '\u67e5\u770b\u8d8b\u52bf\u56fe\u8868\u4e0e\u5b58\u6863' },
   { to: '/admin/logs', icon: FileText, label: '使用记录', desc: '查看调用情况和日志' },
+  { to: '/admin/analytics', icon: PieChart, label: '\u6570\u636e\u5206\u6790', desc: '\u67e5\u770b\u8d8b\u52bf\u56fe\u8868\u4e0e\u5b58\u6863' },
   { to: '/admin/users', icon: Users, label: '用户管理', desc: '管理用户等级和备注' },
   { to: '/admin/redeem', icon: Key, label: '兑换码', desc: '生成和维护兑换码' },
   { to: '/admin/level-config', icon: Settings, label: '等级配置', desc: '配置额度和模型' },

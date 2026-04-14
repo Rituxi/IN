@@ -13,8 +13,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<Navigate to="/admin/analytics" replace />} />
-          <Route path="dashboard" element={<Navigate to="/admin/analytics" replace />} />
+          <Route index element={<Navigate to="/admin/logs" replace />} />
+          <Route path="dashboard" element={<Navigate to="/admin/logs" replace />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="logs" element={<Logs />} />
           <Route path="users" element={<Users />} />
