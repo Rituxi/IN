@@ -153,6 +153,10 @@ function getMonthDisplay(monthKey: string) {
   return `${monthKey.replace('-', '年')}月`;
 }
 
+function getAvailableYears(months: string[]) {
+  return Array.from(new Set(months.map((month) => month.slice(0, 4)).filter(Boolean))).sort((a, b) => b.localeCompare(a));
+}
+
 function SmoothLineChart({ data }: { data: AnalyticsChartPoint[] }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
@@ -273,6 +277,7 @@ function SmoothLineChart({ data }: { data: AnalyticsChartPoint[] }) {
 export default function Analytics() {
   const [range, setRange] = useState<AnalyticsRange>('month');
   const [currentMonth, setCurrentMonth] = useState('');
+  const [currentYear, setCurrentYear] = useState('');
   const [customRange, setCustomRange] = useState(createDefaultCustomRange);
   const [expandedMonths, setExpandedMonths] = useState<string[]>([]);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
@@ -292,6 +297,9 @@ export default function Analytics() {
       const params = new URLSearchParams({ range });
       if (range === 'month' && currentMonth) {
         params.set('month', currentMonth);
+      }
+      if (range === 'year' && currentYear) {
+        params.set('year', currentYear);
       }
       if (range === 'custom') {
         params.set('start', customRange.start);
@@ -313,6 +321,16 @@ export default function Analytics() {
       if (range === 'month' && payload.selectedMonth && payload.selectedMonth !== currentMonth) {
         setCurrentMonth(payload.selectedMonth);
       }
+
+      if (range === 'year') {
+        const payloadYears = getAvailableYears(payload.availableMonths);
+        const nextYear = payloadYears.includes(currentYear)
+          ? currentYear
+          : payloadYears[0] || String(new Date().getFullYear());
+        if (nextYear !== currentYear) {
+          setCurrentYear(nextYear);
+        }
+      }
     } catch (error) {
       console.error(error);
       alert('数据分析加载失败，请稍后重试。');
@@ -324,12 +342,18 @@ export default function Analytics() {
 
   useEffect(() => {
     loadAnalytics(true);
-  }, [range, currentMonth, customRange.start, customRange.end]);
+  }, [range, currentMonth, currentYear, customRange.start, customRange.end]);
 
   const availableMonths = data.availableMonths;
+  const availableYears = useMemo(() => getAvailableYears(availableMonths), [availableMonths]);
+  const activeYear = currentYear || availableYears[0] || '';
   const currentMonthIndex = useMemo(
     () => availableMonths.findIndex((item) => item === (currentMonth || data.selectedMonth)),
     [availableMonths, currentMonth, data.selectedMonth],
+  );
+  const currentYearIndex = useMemo(
+    () => availableYears.findIndex((item) => item === activeYear),
+    [availableYears, activeYear],
   );
 
   const toggleMonth = (month: string) => {
@@ -461,6 +485,38 @@ export default function Analytics() {
                     const nextMonth = availableMonths[currentMonthIndex - 1];
                     if (nextMonth) {
                       setCurrentMonth(nextMonth);
+                    }
+                  }}
+                  className="flex h-full items-center px-3 text-zinc-600 transition-colors hover:bg-white/60 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            ) : null}
+
+            {range === 'year' && availableYears.length > 0 ? (
+              <div className="flex h-[36px] items-center overflow-hidden rounded-full bg-white/40 shadow-sm ring-1 ring-zinc-200/50 backdrop-blur-xl">
+                <button
+                  disabled={currentYearIndex >= availableYears.length - 1}
+                  onClick={() => {
+                    const nextYear = availableYears[currentYearIndex + 1];
+                    if (nextYear) {
+                      setCurrentYear(nextYear);
+                    }
+                  }}
+                  className="flex h-full items-center px-3 text-zinc-600 transition-colors hover:bg-white/60 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <span className="w-24 text-center text-[13px] font-semibold text-zinc-800">
+                  {activeYear ? `${activeYear}年` : ''}
+                </span>
+                <button
+                  disabled={currentYearIndex <= 0}
+                  onClick={() => {
+                    const nextYear = availableYears[currentYearIndex - 1];
+                    if (nextYear) {
+                      setCurrentYear(nextYear);
                     }
                   }}
                   className="flex h-full items-center px-3 text-zinc-600 transition-colors hover:bg-white/60 disabled:cursor-not-allowed disabled:opacity-30"

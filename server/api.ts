@@ -1511,6 +1511,19 @@ async function loadAvailableAnalyticsMonths(): Promise<string[]> {
   return Array.from(new Set(rawMonths.filter(isValidMonthKey)));
 }
 
+async function analyticsIndexHasExactMember(indexKey: string, score: number, member: string): Promise<boolean> {
+  const matched = await redis.zrangeByScore(indexKey, score, score);
+  return matched.includes(member);
+}
+
+async function analyticsMonthExists(monthKey: string): Promise<boolean> {
+  return analyticsIndexHasExactMember(ANALYTICS_KEYS.monthIndex, toAnalyticsMonthScore(monthKey), monthKey);
+}
+
+async function analyticsDayExists(dayKey: string): Promise<boolean> {
+  return analyticsIndexHasExactMember(ANALYTICS_KEYS.dayIndex, toAnalyticsDayScore(dayKey), dayKey);
+}
+
 function getAnalyticsMonthDateRange(monthKey: string): { startDateKey: string; endDateKey: string } {
   const [yearText, monthText] = monthKey.split('-');
   const year = Number(yearText);
@@ -2585,6 +2598,11 @@ apiRouter.put('/admin/analytics/remark', checkAdmin, async (req, res) => {
     const isValidKey = scope === 'month' ? isValidMonthKey(key) : isValidDateKey(key);
     if (!isValidKey) {
       return res.status(400).json({ error: 'INVALID_KEY', message: 'invalid analytics remark key' });
+    }
+
+    const targetExists = scope === 'month' ? await analyticsMonthExists(key) : await analyticsDayExists(key);
+    if (!targetExists) {
+      return res.status(404).json({ error: 'ANALYTICS_PERIOD_NOT_FOUND', message: 'analytics period does not exist' });
     }
 
     if (remarkValidation.valid === false) {
