@@ -6,6 +6,7 @@ This project separates four different concerns:
 2. `level_configs` stores the current base limits and model routing for each level.
 3. `user_stats:*` stores usage counters.
 4. `usage_logs` stores recent success snapshots for admin viewing.
+5. `analytics:*` stores admin analytics indexes and remarks only.
 
 They must not be mixed.
 
@@ -64,6 +65,25 @@ Recent logs live in:
 - `log_index:{logId}`
 
 Logs are snapshots only. They are never used to rebuild counters.
+
+### Analytics keys
+
+The admin analytics page uses dedicated Redis keys for indexing and remarks:
+
+- `analytics:index:days`
+- `analytics:index:months`
+- `analytics:remark:day:{YYYY-MM-DD}`
+- `analytics:remark:month:{YYYY-MM}`
+
+Rules:
+
+- `analytics:index:*` is discovery metadata only, so the page can enumerate which
+  days and months exist after launch.
+- daily and monthly call totals still come from `stats:dailyCalls:*` and
+  `stats:monthlyCalls:*`
+- `analytics:remark:*` stores admin-only notes and never affects counters
+- the analytics page must not rebuild totals from `usage_logs`
+- historical data before this analytics launch is not backfilled
 
 ## Page rules
 
@@ -171,9 +191,12 @@ Main helpers:
 - `reserveFeatureUsage`
 - `recordFeatureUsage`
 - `releaseFeatureUsageReservation`
+- `loadAnalyticsArchives`
 
 Main admin routes:
 
+- `GET /api/admin/analytics`
+- `PUT /api/admin/analytics/remark`
 - `GET /api/admin/logs`
 - `GET /api/admin/users`
 - `GET /api/admin/stats`
@@ -189,3 +212,4 @@ If you change statistics later:
 4. keep logs as snapshots only
 5. do not rebuild counters from log rows
 6. do not let admin pages write counter snapshots back into `user:*`
+7. keep analytics indexes and remarks separate from counters and user profiles

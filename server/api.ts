@@ -17,6 +17,8 @@ interface RedisClient {
   set(key: string, value: string): Promise<void>;
   del(key: string): Promise<void>;
   incr(key: string): Promise<number>;
+  zrange(key: string, start: number, stop: number, options?: { rev?: boolean }): Promise<string[]>;
+  zrangeByScore(key: string, min: string | number, max: string | number, options?: { rev?: boolean }): Promise<string[]>;
   llen(key: string): Promise<number>;
   lpush(key: string, value: string): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
@@ -94,6 +96,25 @@ interface FeatureUsageReservation {
   reservationId: string;
 }
 
+function toRedisStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item) => (typeof item === 'string' ? item : JSON.stringify(item)));
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function buildRedisAdapterError(adapter: string, method: string, key: string, error: unknown): Error {
+  return new Error(`${adapter}.${method} failed for key "${key}": ${toErrorMessage(error)}`);
+}
+
 class IORedisAdapter implements RedisClient {
   private client: Redis;
 
@@ -118,6 +139,33 @@ class IORedisAdapter implements RedisClient {
   async incr(key: string): Promise<number> {
     const result = await this.client.incr(key);
     return result;
+  }
+
+  async zrange(key: string, start: number, stop: number, options?: { rev?: boolean }): Promise<string[]> {
+    try {
+      if (options?.rev) {
+        return this.client.zrevrange(key, start, stop);
+      }
+      return this.client.zrange(key, start, stop);
+    } catch (error) {
+      throw buildRedisAdapterError('IORedisAdapter', 'zrange', key, error);
+    }
+  }
+
+  async zrangeByScore(
+    key: string,
+    min: string | number,
+    max: string | number,
+    options?: { rev?: boolean },
+  ): Promise<string[]> {
+    try {
+      if (options?.rev) {
+        return this.client.zrevrangebyscore(key, max, min);
+      }
+      return this.client.zrangebyscore(key, min, max);
+    } catch (error) {
+      throw buildRedisAdapterError('IORedisAdapter', 'zrangeByScore', key, error);
+    }
   }
 
   async llen(key: string): Promise<number> {
@@ -185,6 +233,40 @@ class UpstashRedisAdapter implements RedisClient {
   async incr(key: string): Promise<number> {
     const result = await this.client.incr(key);
     return typeof result === 'number' ? result : parseInt(result as string, 10);
+  }
+
+  async zrange(key: string, start: number, stop: number, options?: { rev?: boolean }): Promise<string[]> {
+    try {
+      const command = options?.rev ? 'ZREVRANGE' : 'ZRANGE';
+      const result = await this.client.eval(
+        `return redis.call('${command}', KEYS[1], tonumber(ARGV[1]), tonumber(ARGV[2]))`,
+        [key],
+        [String(start), String(stop)],
+      );
+      return toRedisStringArray(result);
+    } catch (error) {
+      throw buildRedisAdapterError('UpstashRedisAdapter', 'zrange', key, error);
+    }
+  }
+
+  async zrangeByScore(
+    key: string,
+    min: string | number,
+    max: string | number,
+    options?: { rev?: boolean },
+  ): Promise<string[]> {
+    try {
+      const command = options?.rev ? 'ZREVRANGEBYSCORE' : 'ZRANGEBYSCORE';
+      const scoreArgs = options?.rev ? [String(max), String(min)] : [String(min), String(max)];
+      const result = await this.client.eval(
+        `return redis.call('${command}', KEYS[1], ARGV[1], ARGV[2])`,
+        [key],
+        scoreArgs,
+      );
+      return toRedisStringArray(result);
+    } catch (error) {
+      throw buildRedisAdapterError('UpstashRedisAdapter', 'zrangeByScore', key, error);
+    }
   }
 
   async llen(key: string): Promise<number> {
@@ -277,6 +359,14 @@ const redis: RedisClient = {
   set: (key: string, value: string) => getRedisClient().set(key, value),
   del: (key: string) => getRedisClient().del(key),
   incr: (key: string) => getRedisClient().incr(key),
+  zrange: (key: string, start: number, stop: number, options?: { rev?: boolean }) =>
+    getRedisClient().zrange(key, start, stop, options),
+  zrangeByScore: (
+    key: string,
+    min: string | number,
+    max: string | number,
+    options?: { rev?: boolean },
+  ) => getRedisClient().zrangeByScore(key, min, max, options),
   llen: (key: string) => getRedisClient().llen(key),
   lpush: (key: string, value: string) => getRedisClient().lpush(key, value),
   lrange: (key: string, start: number, stop: number) => getRedisClient().lrange(key, start, stop),
@@ -584,6 +674,186 @@ function getStatsMonthlyCallsKey(monthKey: string, feature?: FeatureType): strin
   return feature ? `stats:monthlyCalls:${monthKey}:${feature}` : `stats:monthlyCalls:${monthKey}`;
 }
 
+const ANALYTICS_KEYS = Object.freeze({
+  dayIndex: 'analytics:index:days',
+  monthIndex: 'analytics:index:months',
+  dayRemarkPrefix: 'analytics:remark:day:',
+  monthRemarkPrefix: 'analytics:remark:month:',
+});
+const ANALYTICS_REMARK_MAX_LENGTH = 200;
+const ANALYTICS_MAX_CUSTOM_RANGE_DAYS = 366;
+
+interface AnalyticsRemarkRecord {
+  remark: string;
+  updatedAt: string;
+}
+
+interface AnalyticsDayStats {
+  date: string;
+  ocr: number;
+  summary: number;
+  total: number;
+  remark: string;
+}
+
+interface AnalyticsMonthArchive {
+  month: string;
+  totalOcr: number;
+  totalSummary: number;
+  total: number;
+  remark: string;
+  days: AnalyticsDayStats[];
+}
+
+interface AnalyticsChartPoint {
+  date: string;
+  displayLabel: string;
+  ocr: number;
+  summary: number;
+  total: number;
+}
+
+interface AnalyticsSummaryPayload {
+  totalCalls: number;
+  totalOcr: number;
+  totalSummary: number;
+  peakValue: number;
+  peakUnit: 'day' | 'month';
+}
+
+function getAnalyticsDayRemarkKey(dayKey: string): string {
+  return `${ANALYTICS_KEYS.dayRemarkPrefix}${dayKey}`;
+}
+
+function getAnalyticsMonthRemarkKey(monthKey: string): string {
+  return `${ANALYTICS_KEYS.monthRemarkPrefix}${monthKey}`;
+}
+
+function toAnalyticsDayScore(dayKey: string): number {
+  return Number(dayKey.replaceAll('-', ''));
+}
+
+function toAnalyticsMonthScore(monthKey: string): number {
+  return Number(monthKey.replaceAll('-', ''));
+}
+
+function isValidMonthKey(value: string): boolean {
+  if (!/^\d{4}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const [yearText, monthText] = value.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  return Number.isInteger(year) && year >= 1970 && Number.isInteger(month) && month >= 1 && month <= 12;
+}
+
+function isValidYearKey(value: string): boolean {
+  if (!/^\d{4}$/.test(value)) {
+    return false;
+  }
+
+  const year = Number(value);
+  return Number.isInteger(year) && year >= 1970;
+}
+
+function isValidDateKey(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const [yearText, monthText, dayText] = value.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isInteger(year) || year < 1970 || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function getMonthKeyFromDateKey(dayKey: string): string {
+  return dayKey.slice(0, 7);
+}
+
+function getAnalyticsRangeDayCount(startDateKey: string, endDateKey: string): number {
+  const start = new Date(`${startDateKey}T00:00:00Z`);
+  const end = new Date(`${endDateKey}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return 0;
+  }
+  return Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+}
+
+function formatAnalyticsMonthLabel(monthKey: string): string {
+  return monthKey;
+}
+
+function formatAnalyticsDayLabel(dayKey: string): string {
+  return dayKey.slice(-2);
+}
+
+function normalizeAnalyticsRemark(value: unknown): string {
+  return toText(value).trim().slice(0, ANALYTICS_REMARK_MAX_LENGTH);
+}
+
+function validateAnalyticsRemarkInput(value: unknown): { valid: true; remark: string } | { valid: false; message: string } {
+  const trimmedRemark = toText(value).trim();
+  if (trimmedRemark.length > ANALYTICS_REMARK_MAX_LENGTH) {
+    return {
+      valid: false,
+      message: `remark length must be <= ${ANALYTICS_REMARK_MAX_LENGTH}`,
+    };
+  }
+
+  return {
+    valid: true,
+    remark: normalizeAnalyticsRemark(trimmedRemark),
+  };
+}
+
+function parseAnalyticsRemarkRecord(value: string | null): AnalyticsRemarkRecord | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = safeJsonParse(value);
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+
+  const payload = parsed as Record<string, unknown>;
+  const remark = normalizeAnalyticsRemark(payload.remark);
+  if (!remark) {
+    return null;
+  }
+
+  return {
+    remark,
+    updatedAt: toText(payload.updatedAt),
+  };
+}
+
+function buildAnalyticsSummary(points: AnalyticsChartPoint[], peakUnit: 'day' | 'month'): AnalyticsSummaryPayload {
+  const totalOcr = points.reduce((sum, point) => sum + point.ocr, 0);
+  const totalSummary = points.reduce((sum, point) => sum + point.summary, 0);
+  const peakValue = points.reduce((maxValue, point) => Math.max(maxValue, point.total), 0);
+
+  return {
+    totalCalls: totalOcr + totalSummary,
+    totalOcr,
+    totalSummary,
+    peakValue,
+    peakUnit,
+  };
+}
+
 async function hydrateUsersUsage(users: StoredUserRecord[]): Promise<UserRecord[]> {
   if (!users.length) {
     return [];
@@ -776,6 +1046,8 @@ async function recordFeatureUsage(
   const usedAt = new Date().toISOString();
   const logId = `log_${uuidv4()}`;
   const monthlyExpireSeconds = 60 * 60 * 24 * 400;
+  const dayScore = toAnalyticsDayScore(today);
+  const monthScore = toAnalyticsMonthScore(monthKey);
   const luaScript = `
     local function extractLogId(rawLog)
       local ok, parsed = pcall(cjson.decode, rawLog)
@@ -815,6 +1087,8 @@ async function recordFeatureUsage(
     redis.call('INCR', KEYS[10])
     redis.call('INCR', KEYS[11])
     redis.call('EXPIRE', KEYS[11], tonumber(ARGV[4]))
+    redis.call('ZADD', KEYS[12], tonumber(ARGV[12]), ARGV[13])
+    redis.call('ZADD', KEYS[13], tonumber(ARGV[14]), ARGV[15])
 
     local log = cjson.encode({
       id = ARGV[5],
@@ -832,15 +1106,15 @@ async function recordFeatureUsage(
     redis.call('SET', KEYS[5], log)
     local overflow = redis.call('LRANGE', KEYS[4], tonumber(ARGV[11]), -1)
     redis.call('LTRIM', KEYS[4], 0, tonumber(ARGV[11]) - 1)
-    local logIndexKeyPrefix = ARGV[12]
+    local logIndexKeyPrefix = ARGV[16]
 
     for _, overflowLog in ipairs(overflow) do
       local overflowLogId = extractLogId(overflowLog)
       if overflowLogId and overflowLogId ~= '' then
         redis.call('DEL', logIndexKeyPrefix .. overflowLogId)
       else
-        redis.call('INCR', KEYS[12])
-        redis.call('SET', KEYS[13], string.sub(tostring(overflowLog), 1, 500))
+        redis.call('INCR', KEYS[14])
+        redis.call('SET', KEYS[15], string.sub(tostring(overflowLog), 1, 500))
       end
     end
 
@@ -861,6 +1135,8 @@ async function recordFeatureUsage(
       getStatsTotalCallsKey(feature),
       getStatsDailyCallsKey(today, feature),
       getStatsMonthlyCallsKey(monthKey, feature),
+      ANALYTICS_KEYS.dayIndex,
+      ANALYTICS_KEYS.monthIndex,
       ADMIN_LOG_TRIM_DECODE_FAILURES_KEY,
       ADMIN_LOG_TRIM_LAST_FAILURE_SAMPLE_KEY,
     ],
@@ -876,6 +1152,10 @@ async function recordFeatureUsage(
       feature,
       usedAt,
       ADMIN_LOGS_CONFIG.maxStore,
+      dayScore,
+      today,
+      monthScore,
+      monthKey,
       ADMIN_LOG_INDEX_KEY_PREFIX,
     ],
   );
@@ -1217,6 +1497,194 @@ function safeJsonParse(text: string): unknown {
       return {};
     }
   }
+}
+
+async function mgetOptional(keys: string[]): Promise<(string | null)[]> {
+  if (!keys.length) {
+    return [];
+  }
+  return redis.mget(...keys);
+}
+
+async function loadAvailableAnalyticsMonths(): Promise<string[]> {
+  const rawMonths = await redis.zrange(ANALYTICS_KEYS.monthIndex, 0, -1, { rev: true });
+  return Array.from(new Set(rawMonths.filter(isValidMonthKey)));
+}
+
+function getAnalyticsMonthDateRange(monthKey: string): { startDateKey: string; endDateKey: string } {
+  const [yearText, monthText] = monthKey.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  return {
+    startDateKey: `${monthKey}-01`,
+    endDateKey: `${monthKey}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
+async function loadAnalyticsDaysForMonthKeys(monthKeys: string[]): Promise<string[]> {
+  if (!monthKeys.length) {
+    return [];
+  }
+
+  const dayGroups = await Promise.all(
+    monthKeys.map((monthKey) => {
+      const { startDateKey, endDateKey } = getAnalyticsMonthDateRange(monthKey);
+      return redis.zrangeByScore(
+        ANALYTICS_KEYS.dayIndex,
+        toAnalyticsDayScore(startDateKey),
+        toAnalyticsDayScore(endDateKey),
+      );
+    }),
+  );
+
+  return Array.from(
+    new Set(
+      dayGroups
+        .flat()
+        .filter(isValidDateKey),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+}
+
+interface LoadAnalyticsArchivesOptions {
+  monthKeys?: string[];
+  startDateKey?: string;
+  endDateKey?: string;
+  aggregateFromFilteredDaysOnly?: boolean;
+}
+
+async function loadAnalyticsArchives(options: LoadAnalyticsArchivesOptions = {}): Promise<AnalyticsMonthArchive[]> {
+  const requestedMonthKeys = Array.from(new Set((options.monthKeys || []).filter(isValidMonthKey))).sort((a, b) => b.localeCompare(a));
+  let availableDays: string[] = [];
+  let archiveMonthKeys = requestedMonthKeys;
+
+  if (options.startDateKey && options.endDateKey) {
+    availableDays = Array.from(
+      new Set(
+        (
+          await redis.zrangeByScore(
+            ANALYTICS_KEYS.dayIndex,
+            toAnalyticsDayScore(options.startDateKey),
+            toAnalyticsDayScore(options.endDateKey),
+          )
+        ).filter(isValidDateKey),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+
+    if (!archiveMonthKeys.length) {
+      archiveMonthKeys = Array.from(new Set(availableDays.map((day) => getMonthKeyFromDateKey(day)))).sort((a, b) => b.localeCompare(a));
+    }
+  } else {
+    availableDays = await loadAnalyticsDaysForMonthKeys(archiveMonthKeys);
+  }
+
+  const [
+    monthlyOcrValues,
+    monthlySummaryValues,
+    dailyOcrValues,
+    dailySummaryValues,
+    monthRemarkValues,
+    dayRemarkValues,
+  ] = await Promise.all([
+    mgetOptional(archiveMonthKeys.map((month) => getStatsMonthlyCallsKey(month, 'ocr'))),
+    mgetOptional(archiveMonthKeys.map((month) => getStatsMonthlyCallsKey(month, 'summary'))),
+    mgetOptional(availableDays.map((day) => getStatsDailyCallsKey(day, 'ocr'))),
+    mgetOptional(availableDays.map((day) => getStatsDailyCallsKey(day, 'summary'))),
+    mgetOptional(archiveMonthKeys.map((month) => getAnalyticsMonthRemarkKey(month))),
+    mgetOptional(availableDays.map((day) => getAnalyticsDayRemarkKey(day))),
+  ]);
+
+  const daysByMonth = new Map<string, AnalyticsDayStats[]>();
+  for (let index = 0; index < availableDays.length; index += 1) {
+    const date = availableDays[index];
+    const ocr = toNonNegativeNumber(dailyOcrValues[index]);
+    const summary = toNonNegativeNumber(dailySummaryValues[index]);
+    const monthKey = getMonthKeyFromDateKey(date);
+    const dayStats: AnalyticsDayStats = {
+      date,
+      ocr,
+      summary,
+      total: ocr + summary,
+      remark: parseAnalyticsRemarkRecord(dayRemarkValues[index])?.remark || '',
+    };
+
+    const currentDays = daysByMonth.get(monthKey) || [];
+    currentDays.push(dayStats);
+    daysByMonth.set(monthKey, currentDays);
+  }
+
+  return archiveMonthKeys.map((month, index) => {
+    const monthDays = [...(daysByMonth.get(month) || [])].sort((a, b) => b.date.localeCompare(a.date));
+    const fallbackTotals = monthDays.reduce(
+      (result, day) => ({
+        ocr: result.ocr + day.ocr,
+        summary: result.summary + day.summary,
+      }),
+      { ocr: 0, summary: 0 },
+    );
+    const totalOcr = options.aggregateFromFilteredDaysOnly
+      ? fallbackTotals.ocr
+      : Math.max(toNonNegativeNumber(monthlyOcrValues[index]), fallbackTotals.ocr);
+    const totalSummary = options.aggregateFromFilteredDaysOnly
+      ? fallbackTotals.summary
+      : Math.max(toNonNegativeNumber(monthlySummaryValues[index]), fallbackTotals.summary);
+
+    return {
+      month,
+      totalOcr,
+      totalSummary,
+      total: totalOcr + totalSummary,
+      remark: parseAnalyticsRemarkRecord(monthRemarkValues[index])?.remark || '',
+      days: monthDays,
+    };
+  });
+}
+
+function buildMonthChartData(archives: AnalyticsMonthArchive[], monthKey: string): AnalyticsChartPoint[] {
+  const targetMonth = archives.find((archive) => archive.month === monthKey);
+  if (!targetMonth) {
+    return [];
+  }
+
+  return [...targetMonth.days]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((day) => ({
+      date: day.date,
+      displayLabel: `${formatAnalyticsDayLabel(day.date)}\u65e5`,
+      ocr: day.ocr,
+      summary: day.summary,
+      total: day.total,
+    }));
+}
+
+function buildYearChartData(archives: AnalyticsMonthArchive[], availableMonths: string[]): AnalyticsChartPoint[] {
+  const activeYear = availableMonths[0]?.slice(0, 4) || getMonthKeyInTimezone().slice(0, 4);
+
+  return archives
+    .filter((archive) => archive.month.startsWith(`${activeYear}-`))
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .map((monthArchive) => ({
+      date: monthArchive.month,
+      displayLabel: `${formatAnalyticsMonthLabel(monthArchive.month).slice(5)}\u6708`,
+      ocr: monthArchive.totalOcr,
+      summary: monthArchive.totalSummary,
+      total: monthArchive.total,
+    }));
+}
+
+function buildCustomChartData(archives: AnalyticsMonthArchive[]): AnalyticsChartPoint[] {
+  return archives
+    .flatMap((archive) => archive.days)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((day) => ({
+      date: day.date,
+      displayLabel: `${formatAnalyticsDayLabel(day.date)}\u65e5`,
+      ocr: day.ocr,
+      summary: day.summary,
+      total: day.total,
+    }));
 }
 
 function normalizeSummaryPrompts(payload: unknown): SummaryPrompts {
@@ -2020,6 +2488,146 @@ function mergeFeatureCallCountsByMax(primary: FeatureCallCounts, fallback: Featu
     summary: Math.max(primary.summary, fallback.summary),
   };
 }
+
+apiRouter.get('/admin/analytics', checkAdmin, async (req, res) => {
+  try {
+    const range = toText(req.query.range).trim() || 'month';
+    if (range !== 'month' && range !== 'year' && range !== 'custom') {
+      return res.status(400).json({ error: 'INVALID_RANGE', message: 'range must be month, year, or custom' });
+    }
+
+    const availableMonths = await loadAvailableAnalyticsMonths();
+    const selectedMonthParam = toText(req.query.month).trim();
+    const selectedYearParam = toText(req.query.year).trim();
+    if (selectedMonthParam && !isValidMonthKey(selectedMonthParam)) {
+      return res.status(400).json({ error: 'INVALID_MONTH', message: 'month must be YYYY-MM' });
+    }
+    if (selectedYearParam && !isValidYearKey(selectedYearParam)) {
+      return res.status(400).json({ error: 'INVALID_YEAR', message: 'year must be YYYY' });
+    }
+    const selectedMonth =
+      selectedMonthParam
+        ? selectedMonthParam
+        : availableMonths[0] || getMonthKeyInTimezone();
+
+    let responseArchives: AnalyticsMonthArchive[] = [];
+    let chart: AnalyticsChartPoint[] = [];
+    let summary: AnalyticsSummaryPayload = buildAnalyticsSummary([], 'day');
+
+    if (range === 'month') {
+      if (selectedMonthParam && !availableMonths.includes(selectedMonthParam)) {
+        return res.status(404).json({ error: 'MONTH_NOT_FOUND', message: 'requested analytics month is unavailable' });
+      }
+      responseArchives = await loadAnalyticsArchives({
+        monthKeys: [selectedMonth],
+      });
+      chart = buildMonthChartData(responseArchives, selectedMonth);
+      summary = buildAnalyticsSummary(chart, 'day');
+    } else if (range === 'year') {
+      const activeYear = selectedYearParam || availableMonths[0]?.slice(0, 4) || getMonthKeyInTimezone().slice(0, 4);
+      const yearMonths = availableMonths.filter((month) => month.startsWith(`${activeYear}-`));
+      if (selectedYearParam && !yearMonths.length) {
+        return res.status(404).json({ error: 'YEAR_NOT_FOUND', message: 'requested analytics year is unavailable' });
+      }
+      responseArchives = await loadAnalyticsArchives({
+        monthKeys: yearMonths,
+      });
+      chart = buildYearChartData(responseArchives, yearMonths);
+      summary = buildAnalyticsSummary(chart, 'month');
+    } else {
+      const start = toText(req.query.start).trim();
+      const end = toText(req.query.end).trim();
+      if (!isValidDateKey(start) || !isValidDateKey(end)) {
+        return res.status(400).json({ error: 'INVALID_DATE_RANGE', message: 'start and end must be YYYY-MM-DD' });
+      }
+      if (start > end) {
+        return res.status(400).json({ error: 'INVALID_DATE_RANGE', message: 'start must be less than or equal to end' });
+      }
+      const dayCount = getAnalyticsRangeDayCount(start, end);
+      if (dayCount > ANALYTICS_MAX_CUSTOM_RANGE_DAYS) {
+        return res.status(400).json({
+          error: 'DATE_RANGE_TOO_LARGE',
+          message: `custom range must be <= ${ANALYTICS_MAX_CUSTOM_RANGE_DAYS} days`,
+        });
+      }
+
+      responseArchives = await loadAnalyticsArchives({
+        startDateKey: start,
+        endDateKey: end,
+        aggregateFromFilteredDaysOnly: true,
+      });
+      chart = buildCustomChartData(responseArchives);
+      summary = buildAnalyticsSummary(chart, 'day');
+    }
+
+    res.json({
+      availableMonths,
+      selectedMonth,
+      summary,
+      chart,
+      archives: responseArchives,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.put('/admin/analytics/remark', checkAdmin, async (req, res) => {
+  try {
+    const scope = toText(req.body?.scope).trim();
+    const key = toText(req.body?.key).trim();
+    const remarkValidation = validateAnalyticsRemarkInput(req.body?.remark);
+
+    if (scope !== 'month' && scope !== 'day') {
+      return res.status(400).json({ error: 'INVALID_SCOPE', message: 'scope must be month or day' });
+    }
+
+    const isValidKey = scope === 'month' ? isValidMonthKey(key) : isValidDateKey(key);
+    if (!isValidKey) {
+      return res.status(400).json({ error: 'INVALID_KEY', message: 'invalid analytics remark key' });
+    }
+
+    if (remarkValidation.valid === false) {
+      return res.status(400).json({
+        error: 'REMARK_TOO_LONG',
+        message: remarkValidation.message,
+      });
+    }
+
+    const remark = remarkValidation.remark;
+    const storageKey = scope === 'month' ? getAnalyticsMonthRemarkKey(key) : getAnalyticsDayRemarkKey(key);
+
+    if (!remark) {
+      await redis.del(storageKey);
+      return res.json({
+        success: true,
+        scope,
+        key,
+        remark: '',
+        updatedAt: '',
+      });
+    }
+
+    const updatedAt = new Date().toISOString();
+    await redis.set(
+      storageKey,
+      JSON.stringify({
+        remark,
+        updatedAt,
+      }),
+    );
+
+    res.json({
+      success: true,
+      scope,
+      key,
+      remark,
+      updatedAt,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 async function sumCountersByPattern(matchPattern: string): Promise<number> {
   let cursor = '0';
