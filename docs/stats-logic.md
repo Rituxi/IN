@@ -74,6 +74,7 @@ The admin analytics page uses dedicated Redis keys for indexing and remarks:
 - `analytics:index:months`
 - `analytics:remark:day:{YYYY-MM-DD}`
 - `analytics:remark:month:{YYYY-MM}`
+- `stats:dailyUsers:{YYYY-MM-DD}`
 
 Rules:
 
@@ -81,6 +82,12 @@ Rules:
   days and months exist after launch.
 - daily and monthly call totals still come from `stats:dailyCalls:*` and
   `stats:monthlyCalls:*`
+- daily unique user coverage comes from `stats:dailyUsers:*`
+- monthly archive user counts are derived from stored daily unique-user sets
+- recent retained `usage_logs` may be used only as a legacy fallback when older
+  rows exist from before `stats:dailyUsers:*` was introduced
+- `stats:dailyUsers:*` must remain durable for analytics archives, otherwise old
+  archive user counts will decay to `0` after key expiry
 - `analytics:remark:*` stores admin-only notes and never affects counters
 - the analytics page must not rebuild totals from `usage_logs`
 - historical data before this analytics launch is not backfilled
@@ -98,6 +105,8 @@ So:
 
 - OCR rows show OCR-only counters
 - Summary rows show summary-only counters
+- the overview card `Today users` comes from `stats:dailyUsers:{YYYY-MM-DD}`,
+  with recent logs used only as a legacy fallback
 - deleting a log only deletes the log row
 - deleting a log does not change counters
 

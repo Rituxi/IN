@@ -34,6 +34,7 @@ interface AnalyticsDayArchive {
   ocr: number;
   summary: number;
   total: number;
+  users: number;
   remark: string;
 }
 
@@ -42,6 +43,7 @@ interface AnalyticsMonthArchive {
   totalOcr: number;
   totalSummary: number;
   total: number;
+  totalUsers: number;
   remark: string;
   days: AnalyticsDayArchive[];
 }
@@ -633,11 +635,12 @@ export default function Analytics() {
           </button>
         </div>
 
-        <div className="mb-2 hidden grid-cols-[160px_100px_100px_100px_minmax(200px,1fr)] items-center gap-x-6 px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">
+        <div className="mb-2 hidden grid-cols-[160px_100px_100px_100px_100px_minmax(200px,1fr)] items-center gap-x-6 px-8 py-3 text-[13px] font-medium text-zinc-400 xl:grid">
           <div>时间归档 (Date)</div>
           <div>智能 OCR</div>
           <div>智能小结</div>
           <div>总计消耗</div>
+          <div>使用人数</div>
           <div className="border-l border-zinc-200/60 pl-4">存档备注</div>
         </div>
 
@@ -658,7 +661,7 @@ export default function Analytics() {
               >
                 <div
                   onClick={() => toggleMonth(monthArchive.month)}
-                  className="grid cursor-pointer gap-y-3 px-6 py-4 transition-colors hover:bg-white/70 xl:grid-cols-[160px_100px_100px_100px_minmax(200px,1fr)] xl:items-center xl:gap-x-6"
+                  className="grid cursor-pointer gap-y-3 px-6 py-4 transition-colors hover:bg-white/70 xl:grid-cols-[160px_100px_100px_100px_100px_minmax(200px,1fr)] xl:items-center xl:gap-x-6"
                 >
                   <div className="flex items-center gap-3">
                     <div className={`text-zinc-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}>
@@ -676,6 +679,10 @@ export default function Analytics() {
                     <span className="ml-1 text-[11px] text-zinc-400">次</span>
                   </div>
                   <div className="text-[16px] font-bold text-zinc-900">{monthArchive.total}</div>
+                  <div className="text-[15px] font-semibold text-zinc-800">
+                    {monthArchive.totalUsers}
+                    <span className="ml-1 text-[11px] text-zinc-400">人</span>
+                  </div>
 
                   <div className="group/remark flex h-full items-center border-l border-zinc-200/60 pl-4" onClick={(event) => event.stopPropagation()}>
                     <div className="relative flex w-full items-center">
@@ -705,7 +712,7 @@ export default function Analytics() {
                       return (
                         <div
                           key={dayArchive.date}
-                          className="grid gap-y-3 px-6 py-2.5 transition-colors hover:bg-white/60 xl:grid-cols-[160px_100px_100px_100px_minmax(200px,1fr)] xl:items-center xl:gap-x-6"
+                          className="grid gap-y-3 px-6 py-2.5 transition-colors hover:bg-white/60 xl:grid-cols-[160px_100px_100px_100px_100px_minmax(200px,1fr)] xl:items-center xl:gap-x-6"
                         >
                           <div className="flex items-center gap-3 pl-8">
                             <div className="mr-1 h-4 w-px bg-zinc-300" />
@@ -714,6 +721,7 @@ export default function Analytics() {
                           <div className="text-[14px] font-medium text-zinc-700">{dayArchive.ocr}</div>
                           <div className="text-[14px] font-medium text-zinc-700">{dayArchive.summary}</div>
                           <div className="text-[14px] font-semibold text-zinc-800">{dayArchive.total}</div>
+                          <div className="text-[14px] font-medium text-zinc-700">{dayArchive.users}</div>
 
                           <div className="group/dayremark flex h-full items-center border-l border-zinc-200/40 pl-4">
                             <div className="relative flex w-full items-center">

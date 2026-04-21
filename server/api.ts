@@ -674,6 +674,10 @@ function getStatsMonthlyCallsKey(monthKey: string, feature?: FeatureType): strin
   return feature ? `stats:monthlyCalls:${monthKey}:${feature}` : `stats:monthlyCalls:${monthKey}`;
 }
 
+function getStatsDailyUsersKey(dayKey: string): string {
+  return `stats:dailyUsers:${dayKey}`;
+}
+
 const ANALYTICS_KEYS = Object.freeze({
   dayIndex: 'analytics:index:days',
   monthIndex: 'analytics:index:months',
@@ -693,6 +697,7 @@ interface AnalyticsDayStats {
   ocr: number;
   summary: number;
   total: number;
+  users: number;
   remark: string;
 }
 
@@ -701,6 +706,7 @@ interface AnalyticsMonthArchive {
   totalOcr: number;
   totalSummary: number;
   total: number;
+  totalUsers: number;
   remark: string;
   days: AnalyticsDayStats[];
 }
@@ -852,6 +858,70 @@ function buildAnalyticsSummary(points: AnalyticsChartPoint[], peakUnit: 'day' | 
     peakValue,
     peakUnit,
   };
+}
+
+function buildUniqueTextSet(values: readonly string[]): Set<string> {
+  const normalized = new Set<string>();
+  values.forEach((value) => {
+    const text = toText(value).trim();
+    if (text) {
+      normalized.add(text);
+    }
+  });
+  return normalized;
+}
+
+async function loadUniqueUsersFromLogsByDay(dayKeys: string[]): Promise<Map<string, Set<string>>> {
+  const trackedDays = new Set(dayKeys.filter(isValidDateKey));
+  const usersByDay = new Map<string, Set<string>>();
+  if (!trackedDays.size) {
+    return usersByDay;
+  }
+
+  const logsStr = await redis.lrange(ADMIN_LOGS_CONFIG.key, 0, ADMIN_LOGS_CONFIG.maxStore - 1);
+  for (const entry of logsStr) {
+    const parsed = typeof entry === 'string' ? safeJsonParse(entry) : entry;
+    if (!parsed || typeof parsed !== 'object') continue;
+
+    const log = parsed as Record<string, unknown>;
+    const userId = toText(log.userId).trim();
+    const usedAt = toText(log.usedAt).trim();
+    if (!userId || !usedAt) continue;
+
+    const usedDate = new Date(usedAt);
+    if (Number.isNaN(usedDate.getTime())) continue;
+
+    const dayKey = getDateKeyInTimezone(usedDate);
+    if (!trackedDays.has(dayKey)) continue;
+
+    const currentUsers = usersByDay.get(dayKey) || new Set<string>();
+    currentUsers.add(userId);
+    usersByDay.set(dayKey, currentUsers);
+  }
+
+  return usersByDay;
+}
+
+async function loadUniqueUsersByDay(dayKeys: string[]): Promise<Map<string, Set<string>>> {
+  const validDayKeys = Array.from(new Set(dayKeys.filter(isValidDateKey)));
+  const mergedUsersByDay = new Map<string, Set<string>>();
+  if (!validDayKeys.length) {
+    return mergedUsersByDay;
+  }
+
+  const [persistedUserMembers, logUsersByDay] = await Promise.all([
+    Promise.all(validDayKeys.map((day) => redis.zrange(getStatsDailyUsersKey(day), 0, -1))),
+    loadUniqueUsersFromLogsByDay(validDayKeys),
+  ]);
+
+  validDayKeys.forEach((day, index) => {
+    const users = buildUniqueTextSet(persistedUserMembers[index] || []);
+    const fallbackUsers = logUsersByDay.get(day);
+    fallbackUsers?.forEach((userId) => users.add(userId));
+    mergedUsersByDay.set(day, users);
+  });
+
+  return mergedUsersByDay;
 }
 
 async function hydrateUsersUsage(users: StoredUserRecord[]): Promise<UserRecord[]> {
@@ -1087,8 +1157,9 @@ async function recordFeatureUsage(
     redis.call('INCR', KEYS[10])
     redis.call('INCR', KEYS[11])
     redis.call('EXPIRE', KEYS[11], tonumber(ARGV[4]))
-    redis.call('ZADD', KEYS[12], tonumber(ARGV[12]), ARGV[13])
-    redis.call('ZADD', KEYS[13], tonumber(ARGV[14]), ARGV[15])
+    redis.call('ZADD', KEYS[12], 'NX', tonumber(ARGV[12]), ARGV[6])
+    redis.call('ZADD', KEYS[13], tonumber(ARGV[12]), ARGV[13])
+    redis.call('ZADD', KEYS[14], tonumber(ARGV[14]), ARGV[15])
 
     local log = cjson.encode({
       id = ARGV[5],
@@ -1113,8 +1184,8 @@ async function recordFeatureUsage(
       if overflowLogId and overflowLogId ~= '' then
         redis.call('DEL', logIndexKeyPrefix .. overflowLogId)
       else
-        redis.call('INCR', KEYS[14])
-        redis.call('SET', KEYS[15], string.sub(tostring(overflowLog), 1, 500))
+        redis.call('INCR', KEYS[15])
+        redis.call('SET', KEYS[16], string.sub(tostring(overflowLog), 1, 500))
       end
     end
 
@@ -1135,6 +1206,7 @@ async function recordFeatureUsage(
       getStatsTotalCallsKey(feature),
       getStatsDailyCallsKey(today, feature),
       getStatsMonthlyCallsKey(monthKey, feature),
+      getStatsDailyUsersKey(today),
       ANALYTICS_KEYS.dayIndex,
       ANALYTICS_KEYS.monthIndex,
       ADMIN_LOG_TRIM_DECODE_FAILURES_KEY,
@@ -1600,6 +1672,7 @@ async function loadAnalyticsArchives(options: LoadAnalyticsArchivesOptions = {})
     dailySummaryValues,
     monthRemarkValues,
     dayRemarkValues,
+    uniqueUsersByDay,
   ] = await Promise.all([
     mgetOptional(archiveMonthKeys.map((month) => getStatsMonthlyCallsKey(month, 'ocr'))),
     mgetOptional(archiveMonthKeys.map((month) => getStatsMonthlyCallsKey(month, 'summary'))),
@@ -1607,19 +1680,24 @@ async function loadAnalyticsArchives(options: LoadAnalyticsArchivesOptions = {})
     mgetOptional(availableDays.map((day) => getStatsDailyCallsKey(day, 'summary'))),
     mgetOptional(archiveMonthKeys.map((month) => getAnalyticsMonthRemarkKey(month))),
     mgetOptional(availableDays.map((day) => getAnalyticsDayRemarkKey(day))),
+    loadUniqueUsersByDay(availableDays),
   ]);
 
   const daysByMonth = new Map<string, AnalyticsDayStats[]>();
+  const userIdsByDay = new Map<string, Set<string>>();
   for (let index = 0; index < availableDays.length; index += 1) {
     const date = availableDays[index];
     const ocr = toNonNegativeNumber(dailyOcrValues[index]);
     const summary = toNonNegativeNumber(dailySummaryValues[index]);
     const monthKey = getMonthKeyFromDateKey(date);
+    const dayUsers = uniqueUsersByDay.get(date) || new Set<string>();
+    userIdsByDay.set(date, dayUsers);
     const dayStats: AnalyticsDayStats = {
       date,
       ocr,
       summary,
       total: ocr + summary,
+      users: dayUsers.size,
       remark: parseAnalyticsRemarkRecord(dayRemarkValues[index])?.remark || '',
     };
 
@@ -1630,6 +1708,11 @@ async function loadAnalyticsArchives(options: LoadAnalyticsArchivesOptions = {})
 
   return archiveMonthKeys.map((month, index) => {
     const monthDays = [...(daysByMonth.get(month) || [])].sort((a, b) => b.date.localeCompare(a.date));
+    const monthUsers = new Set<string>();
+    monthDays.forEach((day) => {
+      const dayUsers = userIdsByDay.get(day.date);
+      dayUsers?.forEach((userId) => monthUsers.add(userId));
+    });
     const fallbackTotals = monthDays.reduce(
       (result, day) => ({
         ocr: result.ocr + day.ocr,
@@ -1649,6 +1732,7 @@ async function loadAnalyticsArchives(options: LoadAnalyticsArchivesOptions = {})
       totalOcr,
       totalSummary,
       total: totalOcr + totalSummary,
+      totalUsers: monthUsers.size,
       remark: parseAnalyticsRemarkRecord(monthRemarkValues[index])?.remark || '',
       days: monthDays,
     };
@@ -2761,11 +2845,18 @@ async function loadTodayCallsByFeature(dayKey: string): Promise<FeatureCallCount
   };
 }
 
+async function loadTodayUserCount(dayKey: string): Promise<number> {
+  return (await loadUniqueUsersByDay([dayKey])).get(dayKey)?.size || 0;
+}
+
 apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
   try {
     const today = getDateKeyInTimezone();
     const monthKey = today.slice(0, 7);
-    const todayCallsByFeature = await loadTodayCallsByFeature(today);
+    const [todayCallsByFeature, todayUsers] = await Promise.all([
+      loadTodayCallsByFeature(today),
+      loadTodayUserCount(today),
+    ]);
     const splitCounts = await loadSplitFeatureCallCounts(monthKey);
     const legacyCounts = await loadLegacyFeatureCallCountsFromUserStats(monthKey);
     const totalCallsByFeature = mergeFeatureCallCountsByMax(splitCounts.totalByFeature, legacyCounts.totalByFeature);
@@ -2776,6 +2867,7 @@ apiRouter.get('/admin/stats', checkAdmin, async (req, res) => {
       totalCalls: totalCallsByFeature.ocr + totalCallsByFeature.summary,
       todayCalls: todayCallsByFeature.ocr + todayCallsByFeature.summary,
       monthCalls: monthCallsByFeature.ocr + monthCallsByFeature.summary,
+      todayUsers,
       totalUsers: storedUsers.length,
       totalCallsByFeature,
       todayCallsByFeature,

@@ -18,6 +18,7 @@ interface UsageStats {
   totalCalls: number;
   todayCalls: number;
   monthCalls: number;
+  todayUsers: number;
   totalUsers: number;
   totalCallsByFeature: FeatureStats;
   todayCallsByFeature: FeatureStats;
@@ -47,6 +48,7 @@ const defaultStats: UsageStats = {
   totalCalls: 0,
   todayCalls: 0,
   monthCalls: 0,
+  todayUsers: 0,
   totalUsers: 0,
   totalCallsByFeature: { ocr: 0, summary: 0 },
   todayCallsByFeature: { ocr: 0, summary: 0 },
@@ -85,6 +87,7 @@ function normalizeUsageStats(value: unknown): UsageStats {
     totalCalls: toNonNegativeNumber(stats.totalCalls),
     todayCalls: toNonNegativeNumber(stats.todayCalls),
     monthCalls: toNonNegativeNumber(stats.monthCalls),
+    todayUsers: toNonNegativeNumber(stats.todayUsers),
     totalUsers: toNonNegativeNumber(stats.totalUsers),
     totalCallsByFeature: normalizeFeatureStats(stats.totalCallsByFeature),
     todayCallsByFeature: normalizeFeatureStats(stats.todayCallsByFeature),
@@ -201,10 +204,11 @@ function mergeCachedLogsPage(
 }
 
 const statCards = [
-  { key: 'totalCalls', splitKey: 'totalCallsByFeature', label: '总调用次数', icon: BarChart3 },
-  { key: 'todayCalls', splitKey: 'todayCallsByFeature', label: '今日调用', icon: Activity },
-  { key: 'monthCalls', splitKey: 'monthCallsByFeature', label: '本月调用', icon: Calendar },
-  { key: 'totalUsers', label: '总用户数', icon: Users },
+  { key: 'totalCalls', splitKey: 'totalCallsByFeature', label: '总调用次数', note: '累计功能调用', icon: BarChart3 },
+  { key: 'todayCalls', splitKey: 'todayCallsByFeature', label: '今日调用', note: '当天请求波动', icon: Activity },
+  { key: 'monthCalls', splitKey: 'monthCallsByFeature', label: '本月调用', note: '月度累计趋势', icon: Calendar },
+  { key: 'todayUsers', label: '今日使用人数', note: '当天去重用户', icon: Users },
+  { key: 'totalUsers', label: '总用户数', note: '活跃用户覆盖', icon: Users },
 ] as const;
 
 function StatCardValue({
@@ -415,8 +419,8 @@ export default function Logs() {
           </button>
         </div>
 
-        <div className="mt-6 grid gap-4 xl:grid-cols-4">
-          {statCards.map((stat, index) => {
+        <div className="mt-6 grid gap-4 xl:grid-cols-5">
+          {statCards.map((stat) => {
             const Icon = stat.icon;
             const splitStats = 'splitKey' in stat ? stats[stat.splitKey] : null;
             const fallbackValue = stats[stat.key];
@@ -437,15 +441,7 @@ export default function Logs() {
                   </div>
                 </div>
                 <StatCardValue splitStats={splitStats} fallbackValue={fallbackValue} />
-                <div className={`mt-3 text-[12px] font-medium ${noteClass}`}>
-                  {index === 0
-                    ? '累计功能调用'
-                    : index === 1
-                      ? '当天请求波动'
-                      : index === 2
-                        ? '月度累计趋势'
-                        : '活跃用户覆盖'}
-                </div>
+                <div className={`mt-3 text-[12px] font-medium ${noteClass}`}>{stat.note}</div>
               </div>
             );
           })}
