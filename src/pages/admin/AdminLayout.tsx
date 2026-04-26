@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { FileText, Key, LogOut, PieChart, Settings, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { Database, FileText, Key, LogOut, PieChart, Settings, ShieldCheck, Sparkles, Users } from 'lucide-react';
 
 const navItems = [
   { to: '/admin/logs', icon: FileText, label: '使用记录', desc: '查看调用情况和日志' },
@@ -8,6 +8,7 @@ const navItems = [
   { to: '/admin/users', icon: Users, label: '用户管理', desc: '管理用户等级和备注' },
   { to: '/admin/redeem', icon: Key, label: '兑换码', desc: '生成和维护兑换码' },
   { to: '/admin/level-config', icon: Settings, label: '等级配置', desc: '配置额度和模型' },
+  { to: '/admin/backup', icon: Database, label: '数据备份', desc: '导出和恢复后台数据' },
 ];
 
 export default function AdminLayout() {

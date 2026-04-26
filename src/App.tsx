@@ -6,6 +6,7 @@ import Logs from './pages/admin/Logs';
 import Users from './pages/admin/Users';
 import Redeem from './pages/admin/Redeem';
 import LevelConfig from './pages/admin/LevelConfig';
+import Backup from './pages/admin/Backup';
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="users" element={<Users />} />
           <Route path="redeem" element={<Redeem />} />
           <Route path="level-config" element={<LevelConfig />} />
+          <Route path="backup" element={<Backup />} />
         </Route>
       </Routes>
     </BrowserRouter>

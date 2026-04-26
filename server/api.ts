@@ -96,6 +96,46 @@ interface FeatureUsageReservation {
   reservationId: string;
 }
 
+type RedisBackupEntryType = 'string' | 'list' | 'zset' | 'set' | 'hash';
+
+interface RedisBackupEntry {
+  key: string;
+  type: RedisBackupEntryType;
+  ttlSeconds: number;
+  value: string | string[] | RedisSortedSetEntry[] | Record<string, string>;
+}
+
+interface RedisSortedSetEntry {
+  member: string;
+  score: number;
+}
+
+interface AdminBackupPayload {
+  schemaVersion: number;
+  app: string;
+  exportedAt: string;
+  exportedAtTimestamp: number;
+  timezone: string;
+  includedPatterns: string[];
+  keyCount: number;
+  entries: RedisBackupEntry[];
+}
+
+class AdminBackupValidationError extends Error {
+  code: string;
+  statusCode: number;
+  details?: Record<string, unknown>;
+
+  constructor(code: string, message: string, statusCode = 400, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'AdminBackupValidationError';
+    Object.setPrototypeOf(this, new.target.prototype);
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
+  }
+}
+
 function toRedisStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -489,6 +529,47 @@ const ADMIN_LOGS_CONFIG = Object.freeze({
 const ADMIN_LOG_INDEX_KEY_PREFIX = 'log_index:';
 const ADMIN_LOG_TRIM_DECODE_FAILURES_KEY = 'stats:adminLogs:trimDecodeFailures';
 const ADMIN_LOG_TRIM_LAST_FAILURE_SAMPLE_KEY = 'stats:adminLogs:lastTrimDecodeFailureSample';
+const ADMIN_BACKUP_SCHEMA_VERSION = 1;
+const ADMIN_BACKUP_APP_NAME = 'medical-report-ai';
+const ADMIN_BACKUP_FILE_PREFIX = 'inno-admin-backup';
+const ADMIN_BACKUP_IMPORT_CONFIRMATION = 'RESTORE';
+const ADMIN_BACKUP_MAX_KEYS = 20000;
+const ADMIN_BACKUP_EXPORT_TIMEOUT_MS = toBoundedPositiveInteger(
+  process.env.ADMIN_BACKUP_EXPORT_TIMEOUT_MS,
+  60000,
+  5000,
+  300000,
+);
+const ADMIN_BACKUP_ACTIVE_KEY_PATTERNS = Object.freeze([
+  'user:*',
+  'user_stats:*',
+  'usage_logs',
+  'log_index:*',
+  'stats:*',
+  'analytics:*',
+  'redeem:*',
+  'level_configs',
+  'summary:*',
+  USER_GROUPS_KEY,
+]);
+// These prefixes are reserved for the planned 2027 payment and entitlement feature.
+// The current codebase does not write these keys yet; they are included so first-version
+// payment data is not accidentally left out once order/payment storage is added.
+const ADMIN_BACKUP_RESERVED_PAYMENT_KEY_PATTERNS = Object.freeze([
+  'order:*',
+  'orders:*',
+  'payment:*',
+  'payments:*',
+  'wxpay:*',
+  'entitlement:*',
+  'entitlements:*',
+  'care_plus:*',
+]);
+const ADMIN_BACKUP_KEY_PATTERNS = Object.freeze([
+  ...ADMIN_BACKUP_ACTIVE_KEY_PATTERNS,
+  ...ADMIN_BACKUP_RESERVED_PAYMENT_KEY_PATTERNS,
+]);
+const ADMIN_BACKUP_SUPPORTED_TYPES = new Set<RedisBackupEntryType>(['string', 'list', 'zset', 'set', 'hash']);
 
 function getAdminLogsPaginationMeta(totalCount: number) {
   const safeTotalCount = Math.min(Math.max(0, totalCount), ADMIN_LOGS_CONFIG.maxStore);
@@ -2728,6 +2809,590 @@ apiRouter.put('/admin/analytics/remark', checkAdmin, async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+function normalizeRedisScalar(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function normalizeRedisArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map(normalizeRedisScalar);
+}
+
+function normalizeRedisType(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    return normalizeRedisType(value[0]);
+  }
+  if (value && typeof value === 'object') {
+    const payload = value as Record<string, unknown>;
+    return normalizeRedisType(payload.ok || payload.type);
+  }
+  return 'none';
+}
+
+function backupPatternMatchesKey(pattern: string, key: string): boolean {
+  if (pattern.endsWith('*')) {
+    return key.startsWith(pattern.slice(0, -1));
+  }
+  return key === pattern;
+}
+
+function isManagedBackupKey(key: string): boolean {
+  return ADMIN_BACKUP_KEY_PATTERNS.some((pattern) => backupPatternMatchesKey(pattern, key));
+}
+
+function normalizeBackupTimestampForFile(value: string): string {
+  return value.replace(/[:.]/g, '-');
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+async function getRedisKeyType(key: string): Promise<string> {
+  const result = await redis.evalRaw(
+    `
+      local keyType = redis.call('TYPE', KEYS[1])
+      if type(keyType) == 'table' then
+        return keyType['ok']
+      end
+      return keyType
+    `,
+    [key],
+    [],
+  );
+  return normalizeRedisType(result);
+}
+
+async function getRedisKeyTtl(key: string): Promise<number> {
+  const result = await redis.evalRaw(`return redis.call('TTL', KEYS[1])`, [key], []);
+  const ttl = Number(result);
+  if (!Number.isFinite(ttl)) {
+    return -1;
+  }
+  return Math.trunc(ttl);
+}
+
+async function expireRedisKey(key: string, ttlSeconds: number): Promise<void> {
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    return;
+  }
+  await redis.evalRaw(`return redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))`, [key], [Math.trunc(ttlSeconds)]);
+}
+
+async function collectManagedBackupKeys(): Promise<string[]> {
+  const keys = new Set<string>();
+  for (const pattern of ADMIN_BACKUP_KEY_PATTERNS) {
+    let cursor = '0';
+    do {
+      const [nextCursor, matchedKeys] = await redis.scan(cursor, { match: pattern, count: 300 });
+      cursor = nextCursor;
+      matchedKeys.forEach((key) => {
+        if (isManagedBackupKey(key)) {
+          keys.add(key);
+        }
+      });
+      if (keys.size > ADMIN_BACKUP_MAX_KEYS) {
+        throw new Error(`BACKUP_KEY_LIMIT_EXCEEDED:${ADMIN_BACKUP_MAX_KEYS}`);
+      }
+    } while (cursor !== '0');
+  }
+  return Array.from(keys).sort((a, b) => a.localeCompare(b));
+}
+
+async function getRedisZsetEntries(key: string): Promise<RedisSortedSetEntry[]> {
+  const raw = await redis.evalRaw(
+    `return redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')`,
+    [key],
+    [],
+  );
+  const values = normalizeRedisArray(raw);
+  const entries: RedisSortedSetEntry[] = [];
+  for (let index = 0; index < values.length; index += 2) {
+    const member = values[index];
+    const score = Number(values[index + 1]);
+    if (!member || !Number.isFinite(score)) {
+      continue;
+    }
+    entries.push({ member, score });
+  }
+  return entries;
+}
+
+async function getRedisSetMembers(key: string): Promise<string[]> {
+  const raw = await redis.evalRaw(`return redis.call('SMEMBERS', KEYS[1])`, [key], []);
+  return normalizeRedisArray(raw);
+}
+
+async function getRedisHashValue(key: string): Promise<Record<string, string>> {
+  const raw = await redis.evalRaw(`return redis.call('HGETALL', KEYS[1])`, [key], []);
+  const values = normalizeRedisArray(raw);
+  const payload: Record<string, string> = {};
+  for (let index = 0; index < values.length; index += 2) {
+    const field = values[index];
+    if (!field) continue;
+    payload[field] = values[index + 1] || '';
+  }
+  return payload;
+}
+
+async function exportRedisEntry(key: string): Promise<RedisBackupEntry | null> {
+  const type = await getRedisKeyType(key);
+  if (type === 'none') {
+    return null;
+  }
+  if (!ADMIN_BACKUP_SUPPORTED_TYPES.has(type as RedisBackupEntryType)) {
+    throw new Error(
+      `UNSUPPORTED_REDIS_TYPE:${key}:${type} - 只支持 ${Array.from(ADMIN_BACKUP_SUPPORTED_TYPES).join(', ')} 类型`,
+    );
+  }
+
+  const ttlSeconds = await getRedisKeyTtl(key);
+  if (type === 'string') {
+    return {
+      key,
+      type,
+      ttlSeconds,
+      value: (await redis.get(key)) || '',
+    };
+  }
+  if (type === 'list') {
+    return {
+      key,
+      type,
+      ttlSeconds,
+      value: await redis.lrange(key, 0, -1),
+    };
+  }
+  if (type === 'zset') {
+    return {
+      key,
+      type,
+      ttlSeconds,
+      value: await getRedisZsetEntries(key),
+    };
+  }
+  if (type === 'set') {
+    return {
+      key,
+      type,
+      ttlSeconds,
+      value: await getRedisSetMembers(key),
+    };
+  }
+  return {
+    key,
+    type: 'hash',
+    ttlSeconds,
+    value: await getRedisHashValue(key),
+  };
+}
+
+async function buildAdminBackupPayload(): Promise<AdminBackupPayload> {
+  const keys = await collectManagedBackupKeys();
+  const entries: RedisBackupEntry[] = [];
+  for (const key of keys) {
+    let entry: RedisBackupEntry | null = null;
+    try {
+      entry = await exportRedisEntry(key);
+    } catch (error) {
+      throw new Error(`BACKUP_EXPORT_KEY_FAILED:${key} - ${toErrorMessage(error)}`);
+    }
+    if (entry) {
+      entries.push(entry);
+    }
+  }
+  const exportedAt = new Date().toISOString();
+  return {
+    schemaVersion: ADMIN_BACKUP_SCHEMA_VERSION,
+    app: ADMIN_BACKUP_APP_NAME,
+    exportedAt,
+    exportedAtTimestamp: Date.parse(exportedAt),
+    timezone: QUOTA_TIMEZONE,
+    includedPatterns: [...ADMIN_BACKUP_KEY_PATTERNS],
+    keyCount: entries.length,
+    entries,
+  };
+}
+
+function parseBackupEntry(value: unknown): RedisBackupEntry | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const payload = value as Record<string, unknown>;
+  const key = toText(payload.key).trim();
+  const type = toText(payload.type).trim() as RedisBackupEntryType;
+  const ttlSeconds = Number(payload.ttlSeconds);
+  if (!key || !isManagedBackupKey(key) || !ADMIN_BACKUP_SUPPORTED_TYPES.has(type)) {
+    return null;
+  }
+  const entryValue = normalizeBackupEntryValue(type, payload.value);
+  if (entryValue === null) {
+    return null;
+  }
+  return {
+    key,
+    type,
+    ttlSeconds: Number.isFinite(ttlSeconds) ? Math.trunc(ttlSeconds) : -1,
+    value: entryValue,
+  };
+}
+
+function normalizeBackupEntryValue(type: RedisBackupEntryType, value: unknown): RedisBackupEntry['value'] | null {
+  if (type === 'string') {
+    return typeof value === 'string' ? value : null;
+  }
+  if (type === 'list' || type === 'set') {
+    return Array.isArray(value) ? value.map(normalizeRedisScalar) : null;
+  }
+  if (type === 'zset') {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+    const entries: RedisSortedSetEntry[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const rawEntry = item as Record<string, unknown>;
+      const member = normalizeRedisScalar(rawEntry.member);
+      const score = Number(rawEntry.score);
+      if (!member || !Number.isFinite(score)) {
+        return null;
+      }
+      entries.push({ member, score });
+    }
+    return entries;
+  }
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    return null;
+  }
+  const hashValue: Record<string, string> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([field, fieldValue]) => {
+    if (!field) return;
+    hashValue[field] = normalizeRedisScalar(fieldValue);
+  });
+  return hashValue;
+}
+
+function parseAdminBackupPayload(value: unknown): AdminBackupPayload {
+  if (!value || typeof value !== 'object') {
+    throw new AdminBackupValidationError('INVALID_BACKUP_PAYLOAD', '备份文件结构不正确，请选择后台导出的 JSON 备份文件。');
+  }
+  const payload = value as Record<string, unknown>;
+  const schemaVersion = Number(payload.schemaVersion);
+  if (schemaVersion !== ADMIN_BACKUP_SCHEMA_VERSION) {
+    throw new AdminBackupValidationError(
+      'UNSUPPORTED_BACKUP_SCHEMA',
+      `备份文件版本 v${Number.isFinite(schemaVersion) ? schemaVersion : 'unknown'} 暂不支持，当前后台只支持 v${ADMIN_BACKUP_SCHEMA_VERSION}。请使用对应版本后台导出的备份文件，或先补充迁移逻辑再导入。`,
+      400,
+      {
+        expectedSchemaVersion: ADMIN_BACKUP_SCHEMA_VERSION,
+        receivedSchemaVersion: Number.isFinite(schemaVersion) ? schemaVersion : null,
+      },
+    );
+  }
+  if (!Array.isArray(payload.entries)) {
+    throw new AdminBackupValidationError(
+      'INVALID_BACKUP_ENTRIES',
+      '备份文件缺少 entries 数组，请选择后台导出的完整 JSON 备份文件。',
+    );
+  }
+  const entriesRaw = payload.entries;
+  if (entriesRaw.length > ADMIN_BACKUP_MAX_KEYS) {
+    throw new AdminBackupValidationError(
+      'BACKUP_KEY_LIMIT_EXCEEDED',
+      `备份文件包含的 key 数超过上限 ${ADMIN_BACKUP_MAX_KEYS}。`,
+      400,
+      { maxKeys: ADMIN_BACKUP_MAX_KEYS },
+    );
+  }
+
+  const entries: RedisBackupEntry[] = [];
+  const seenKeys = new Set<string>();
+  for (const rawEntry of entriesRaw) {
+    const entry = parseBackupEntry(rawEntry);
+    if (!entry) {
+      throw new AdminBackupValidationError('INVALID_BACKUP_ENTRY', '备份文件存在无法识别的数据项，请确认文件未被修改。');
+    }
+    if (seenKeys.has(entry.key)) {
+      throw new AdminBackupValidationError(
+        'DUPLICATE_BACKUP_KEY',
+        `备份文件中存在重复 key：${entry.key}。`,
+        400,
+        { key: entry.key },
+      );
+    }
+    seenKeys.add(entry.key);
+    entries.push(entry);
+  }
+
+  return {
+    schemaVersion,
+    app: toText(payload.app) || ADMIN_BACKUP_APP_NAME,
+    exportedAt: toText(payload.exportedAt),
+    exportedAtTimestamp: Number(payload.exportedAtTimestamp) || 0,
+    timezone: toText(payload.timezone) || QUOTA_TIMEZONE,
+    includedPatterns: Array.isArray(payload.includedPatterns)
+      ? payload.includedPatterns.map(toText).filter(Boolean)
+      : [],
+    keyCount: entries.length,
+    entries,
+  };
+}
+
+async function restoreRedisEntry(entry: RedisBackupEntry): Promise<boolean> {
+  await redis.del(entry.key);
+
+  if (entry.type === 'string') {
+    await redis.set(entry.key, typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value));
+    await expireRedisKey(entry.key, entry.ttlSeconds);
+    return true;
+  }
+
+  if (entry.type === 'list') {
+    const values = Array.isArray(entry.value) ? entry.value.map(normalizeRedisScalar) : [];
+    if (!values.length) return false;
+    await redis.evalRaw(
+      `
+        for i = 1, #ARGV do
+          redis.call('RPUSH', KEYS[1], ARGV[i])
+        end
+        return #ARGV
+      `,
+      [entry.key],
+      values,
+    );
+    await expireRedisKey(entry.key, entry.ttlSeconds);
+    return true;
+  }
+
+  if (entry.type === 'zset') {
+    const values = Array.isArray(entry.value) ? entry.value : [];
+    const args: (string | number)[] = [];
+    values.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const member = normalizeRedisScalar((item as RedisSortedSetEntry).member);
+      const score = Number((item as RedisSortedSetEntry).score);
+      if (!member || !Number.isFinite(score)) return;
+      args.push(score, member);
+    });
+    if (!args.length) return false;
+    await redis.evalRaw(
+      `
+        for i = 1, #ARGV, 2 do
+          redis.call('ZADD', KEYS[1], tonumber(ARGV[i]), ARGV[i + 1])
+        end
+        return #ARGV / 2
+      `,
+      [entry.key],
+      args,
+    );
+    await expireRedisKey(entry.key, entry.ttlSeconds);
+    return true;
+  }
+
+  if (entry.type === 'set') {
+    const values = Array.isArray(entry.value) ? entry.value.map(normalizeRedisScalar).filter(Boolean) : [];
+    if (!values.length) return false;
+    await redis.evalRaw(
+      `
+        for i = 1, #ARGV do
+          redis.call('SADD', KEYS[1], ARGV[i])
+        end
+        return #ARGV
+      `,
+      [entry.key],
+      values,
+    );
+    await expireRedisKey(entry.key, entry.ttlSeconds);
+    return true;
+  }
+
+  const hashValue = entry.value && !Array.isArray(entry.value) && typeof entry.value === 'object'
+    ? (entry.value as Record<string, string>)
+    : {};
+  const args: (string | number)[] = [];
+  Object.entries(hashValue).forEach(([field, value]) => {
+    if (!field) return;
+    args.push(field, normalizeRedisScalar(value));
+  });
+  if (!args.length) return false;
+  await redis.evalRaw(
+    `
+      for i = 1, #ARGV, 2 do
+        redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+      end
+      return #ARGV / 2
+    `,
+    [entry.key],
+    args,
+  );
+  await expireRedisKey(entry.key, entry.ttlSeconds);
+  return true;
+}
+
+async function deleteRedisKeys(keys: string[]): Promise<number> {
+  let deletedKeyCount = 0;
+  for (const key of keys) {
+    await redis.del(key);
+    deletedKeyCount += 1;
+  }
+  return deletedKeyCount;
+}
+
+async function exportBackupEntriesForKeys(keys: string[]): Promise<RedisBackupEntry[]> {
+  const entries: RedisBackupEntry[] = [];
+  for (const key of keys) {
+    const entry = await exportRedisEntry(key);
+    if (entry) {
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+async function restoreRedisEntries(entries: RedisBackupEntry[]): Promise<number> {
+  let restoredKeyCount = 0;
+  for (const entry of entries) {
+    const restored = await restoreRedisEntry(entry);
+    if (restored) {
+      restoredKeyCount += 1;
+    }
+  }
+  return restoredKeyCount;
+}
+
+async function rollbackManagedBackupData(rollbackEntries: RedisBackupEntry[]): Promise<number> {
+  const currentKeys = await collectManagedBackupKeys();
+  await deleteRedisKeys(currentKeys);
+  return restoreRedisEntries(rollbackEntries);
+}
+
+apiRouter.get('/admin/backup/status', checkAdmin, async (req, res) => {
+  try {
+    const keys = await collectManagedBackupKeys();
+    res.json({
+      schemaVersion: ADMIN_BACKUP_SCHEMA_VERSION,
+      timezone: QUOTA_TIMEZONE,
+      exportableKeyCount: keys.length,
+      includedPatterns: ADMIN_BACKUP_KEY_PATTERNS,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.get('/admin/backup/export', checkAdmin, async (req, res) => {
+  try {
+    const backup = await withTimeout(
+      buildAdminBackupPayload(),
+      ADMIN_BACKUP_EXPORT_TIMEOUT_MS,
+      `BACKUP_EXPORT_TIMEOUT:${ADMIN_BACKUP_EXPORT_TIMEOUT_MS}ms`,
+    );
+    const filename = `${ADMIN_BACKUP_FILE_PREFIX}-${normalizeBackupTimestampForFile(backup.exportedAt)}.json`;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.json(backup);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post('/admin/backup/import', checkAdmin, async (req, res) => {
+  try {
+    const mode = toText(req.body?.mode).trim() || 'replace';
+    const confirm = toText(req.body?.confirm).trim();
+    if (mode !== 'replace') {
+      return res.status(400).json({ error: 'INVALID_IMPORT_MODE', message: 'Only replace mode is supported' });
+    }
+    if (confirm !== ADMIN_BACKUP_IMPORT_CONFIRMATION) {
+      return res.status(400).json({ error: 'CONFIRMATION_REQUIRED', message: 'Missing restore confirmation' });
+    }
+
+    const backup = parseAdminBackupPayload(req.body?.backup);
+    const existingKeys = await collectManagedBackupKeys();
+    const rollbackEntries = await exportBackupEntriesForKeys(existingKeys);
+
+    let deletedKeyCount = 0;
+    let restoredKeyCount = 0;
+    try {
+      deletedKeyCount = await deleteRedisKeys(existingKeys);
+      restoredKeyCount = await restoreRedisEntries(backup.entries);
+    } catch (restoreError) {
+      try {
+        const rollbackRestoredKeyCount = await rollbackManagedBackupData(rollbackEntries);
+        return res.status(500).json({
+          error: 'BACKUP_IMPORT_FAILED_ROLLED_BACK',
+          message: '备份导入失败，已尝试回滚到导入前数据。请检查 Redis 连接后重试。',
+          details: {
+            restoreError: toErrorMessage(restoreError),
+            rollbackRestoredKeyCount,
+            rollbackSourceKeyCount: rollbackEntries.length,
+          },
+        });
+      } catch (rollbackError) {
+        return res.status(500).json({
+          error: 'BACKUP_IMPORT_FAILED_ROLLBACK_FAILED',
+          message: '备份导入失败，且回滚导入前数据也失败。请不要继续重复导入，先检查 Redis 连接和服务日志。',
+          details: {
+            restoreError: toErrorMessage(restoreError),
+            rollbackError: toErrorMessage(rollbackError),
+            rollbackSourceKeyCount: rollbackEntries.length,
+          },
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      mode,
+      deletedKeyCount,
+      restoredKeyCount,
+      importedAt: new Date().toISOString(),
+      sourceExportedAt: backup.exportedAt,
+      sourceKeyCount: backup.keyCount,
+    });
+  } catch (error: any) {
+    if (error instanceof AdminBackupValidationError) {
+      return res.status(error.statusCode).json({
+        error: error.code,
+        message: error.message,
+        details: error.details || {},
+      });
+    }
+    const message = toErrorMessage(error);
+    if (
+      message.startsWith('INVALID_') ||
+      message.startsWith('UNSUPPORTED_') ||
+      message.startsWith('BACKUP_KEY_LIMIT_EXCEEDED') ||
+      message === 'DUPLICATE_BACKUP_KEY'
+    ) {
+      return res.status(400).json({ error: message, message });
+    }
+    res.status(500).json({ error: message });
   }
 });
 
