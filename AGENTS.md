@@ -20,6 +20,8 @@
 ## 查找与阅读
 
 - 优先使用 `rg` / `rg --files` 查找内容和文件。
+- 本机已安装可用的快速版 ripgrep：Windows PowerShell 下优先使用 `C:\Users\Rituxi\scoop\shims\rg.exe`，WSL/Ubuntu 下优先使用 `~/.local/bin/rg`。
+- 后续搜索定位时，先用上述已验证路径；不要先尝试 Codex 自带的 WindowsApps 路径。
 - 如果 `rg` 命中 `C:\Program Files\WindowsApps\OpenAI.Codex\...\rg(.exe)` 这类 Codex 自带路径，或已经出现 `Access is denied` / `Permission denied`，默认视为当前环境不可用，不要在同一任务里反复重试。
 - 这种情况下，优先使用 WSL 中单独安装的原生 `rg` 或其他原生搜索工具；如果 WSL 里没有可用的原生 `rg`，再退回 PowerShell 的 `Get-ChildItem` 和 `Select-String`。
 - 如果当前环境不能正常使用 `rg`，再退回 PowerShell 的 `Get-ChildItem` 和 `Select-String`。
