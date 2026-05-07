@@ -18,6 +18,10 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  app.get('/healthz', (req, res) => {
+    res.type('text/plain').send('ok');
+  });
+
   app.get('/api/health', async (req, res) => {
     const redisConnected = await checkRedisConnection().catch(() => false);
     res.json({ 
