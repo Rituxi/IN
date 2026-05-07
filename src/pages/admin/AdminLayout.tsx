@@ -13,24 +13,63 @@ const navItems = [
 
 export default function AdminLayout() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [password, setPassword] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
     const token = localStorage.getItem('adminToken');
-    if (token) {
-      setIsAuthenticated(true);
-    }
-  }, []);
-
-  const handleLogin = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!password.trim()) {
+    if (!token) {
+      setIsCheckingAuth(false);
       return;
     }
 
-    localStorage.setItem('adminToken', password);
-    setIsAuthenticated(true);
+    fetch('/api/admin/auth/check', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (res.ok) {
+          setIsAuthenticated(true);
+          return;
+        }
+        localStorage.removeItem('adminToken');
+        setIsAuthenticated(false);
+      })
+      .catch(() => {
+        localStorage.removeItem('adminToken');
+        setIsAuthenticated(false);
+      })
+      .finally(() => {
+        setIsCheckingAuth(false);
+      });
+  }, []);
+
+  const handleLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmedPassword = password.trim();
+    if (!trimmedPassword || isLoggingIn) {
+      return;
+    }
+
+    setIsLoggingIn(true);
+    try {
+      const res = await fetch('/api/admin/auth/check', {
+        headers: { Authorization: `Bearer ${trimmedPassword}` },
+      });
+      if (!res.ok) {
+        localStorage.removeItem('adminToken');
+        setIsAuthenticated(false);
+        alert('管理员密码错误');
+        return;
+      }
+      localStorage.setItem('adminToken', trimmedPassword);
+      setIsAuthenticated(true);
+    } catch (error) {
+      alert('登录验证失败，请稍后重试。');
+    } finally {
+      setIsLoggingIn(false);
+    }
   };
 
   const handleLogout = () => {
@@ -38,6 +77,14 @@ export default function AdminLayout() {
     setIsAuthenticated(false);
     navigate('/admin');
   };
+
+  if (isCheckingAuth) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f2f2f5] px-4 py-10 text-sm font-medium text-zinc-500">
+        正在验证管理员登录状态...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -82,9 +129,10 @@ export default function AdminLayout() {
                 />
                 <button
                   type="submit"
+                  disabled={isLoggingIn}
                   className="w-full rounded-2xl bg-zinc-900 py-3.5 font-semibold text-white transition hover:bg-black"
                 >
-                  登录
+                  {isLoggingIn ? '正在验证...' : '登录'}
                 </button>
               </form>
             </div>

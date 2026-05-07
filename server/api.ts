@@ -1920,6 +1920,10 @@ const checkAdmin = (req: any, res: any, next: any) => {
   }
 };
 
+apiRouter.get('/admin/auth/check', checkAdmin, (_req, res) => {
+  res.json({ ok: true });
+});
+
 // --- User Management ---
 const USER_PATCH_SKIP_TOKEN = '__USER_PATCH_SKIP__';
 
